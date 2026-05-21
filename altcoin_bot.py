@@ -523,9 +523,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "دمج حجم التداول الكلي + التحليل التقني\n\n"
         "الأوامر:\n"
         "/scan     — مسح فوري الآن\n"
-        "/coin ETH — تحليل كامل لعملة محددة
-/vol ETH  — حجم التداول الكلي فقط\n"
-        "/top      — أفضل 5 إشارات\n"
+        "/coin ETH — تحليل كامل لعملة محددة\n"
+        "/vol ETH  — حجم التداول الكلي فقط\n"
+        "/top      — افضل 5 اشارات\n"
         "/status   — حالة البوت\n"
         "/chatid   — معرفة الـ Chat ID\n\n"
         "نظام النقاط:\n"
@@ -570,6 +570,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Chat ID:\n{update.effective_chat.id}")
 
 async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
