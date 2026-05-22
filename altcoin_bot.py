@@ -1,7 +1,7 @@
 """
 🚀 Altcoin Smart Scanner Bot - Ultimate Edition
 3 وظائف:
-1. كل 4 ساعات: اعلى 30 عملة فوليم من كل المنصات
+1. كل 4 ساعات: اعلى 50عملة فوليم من كل المنصات
 2. تنبيه فوري: لما تتوفر اشارة قوية (نظام النقاط)
 3. /vol SYMBOL: حجم تداول اي عملة بدون قيود
 """
@@ -17,12 +17,12 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
 TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
-CHAT_ID        = "6914157653"
+ADMIN_CHAT_ID  = "6914157653"  
 CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
 
 # ==================== اعدادات التقرير الدوري ====================
 SCAN_INTERVAL_MINUTES = 240   # كل 4 ساعات
-TOP_DISPLAY           = 30    # اعلى 30 عملة فوليم
+TOP_DISPLAY           = 50    # اعلى 50 عملة فوليم
 CMC_LIMIT             = 500   # نجيب اول 500 من CMC
 
 # ==================== اعدادات الاشارات ====================
@@ -54,6 +54,9 @@ logger = logging.getLogger(__name__)
 
 previous_report:  list = []
 previous_signals: dict = {}
+seen_coins:       dict = {}   # عملة: timestamp اخر ظهور (24 ساعة cooldown)
+trending_cache:   dict = {}   # cache للترندينج
+subscribers:      set  = set()  # كل المشتركين في البوت
 
 # ==================== قوائم الاستبعاد ====================
 EXCLUDED_SYMBOLS = {
@@ -389,9 +392,21 @@ async def send_volume_report(bot: Bot):
         if d["volume_24h"] < MIN_VOLUME_REPORT: continue
         coins.append(d)
 
-    # ترتيب حسب الفوليم وناخد اعلى 30
+    # ترتيب حسب الفوليم
     coins.sort(key=lambda x: x["volume_24h"], reverse=True)
-    top30 = coins[:TOP_DISPLAY]
+
+    # تطبيق الـ 24h cooldown
+    filtered = []
+    for c in coins:
+        if not is_coin_cooldown(c["symbol"]):
+            filtered.append(c)
+        if len(filtered) >= TOP_DISPLAY:
+            break
+
+    top30 = filtered
+    # سجّل العملات اللي هتظهر
+    for c in top30:
+        mark_coin_seen(c["symbol"])
     previous_report = top30
 
     # بناء الرسائل (10 في كل رسالة)
@@ -426,8 +441,7 @@ async def send_volume_report(bot: Bot):
             lines.append("💡 لحجم عملة: /vol SYMBOL")
 
         try:
-            await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines),
-                                   disable_web_page_preview=True)
+            await broadcast(bot, "\n".join(lines), disable_preview=True)
             await asyncio.sleep(0.5)
         except Exception as e:
             logger.error(f"خطأ ارسال تقرير: {e}")
@@ -531,14 +545,136 @@ async def check_signals(bot: Bot):
             lines.append("📡 CMC + Binance Technical Analysis")
 
         try:
-            await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines),
-                                   disable_web_page_preview=True)
+            await broadcast(bot, "\n".join(lines), disable_preview=True)
             await asyncio.sleep(0.5)
         except Exception as e:
             logger.error(f"خطأ ارسال اشارة: {e}")
 
     previous_signals = {c["symbol"]: c for c in signals}
     logger.info(f"تم ارسال {len(signals)} اشارة")
+
+
+# ============================================================
+# نظام المشتركين
+# ============================================================
+import json, os
+
+SUBS_FILE = "subscribers.json"
+
+def load_subscribers():
+    global subscribers
+    try:
+        if os.path.exists(SUBS_FILE):
+            with open(SUBS_FILE, "r") as f:
+                data = json.load(f)
+            subscribers = set(data)
+            logger.info(f"تم تحميل {len(subscribers)} مشترك")
+    except Exception as e:
+        logger.error(f"خطأ تحميل المشتركين: {e}")
+
+def save_subscribers():
+    try:
+        with open(SUBS_FILE, "w") as f:
+            json.dump(list(subscribers), f)
+    except Exception as e:
+        logger.error(f"خطأ حفظ المشتركين: {e}")
+
+async def broadcast(bot: Bot, text: str, disable_preview: bool = False):
+    """ارسال رسالة لكل المشتركين"""
+    if not subscribers:
+        return
+    failed = []
+    for chat_id in list(subscribers):
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=text,
+                disable_web_page_preview=disable_preview
+            )
+            await asyncio.sleep(0.05)  # تجنب flood
+        except Exception as e:
+            err = str(e).lower()
+            if "blocked" in err or "not found" in err or "deactivated" in err:
+                failed.append(chat_id)
+                logger.info(f"حذف مشترك غير نشط: {chat_id}")
+            else:
+                logger.error(f"خطأ ارسال لـ {chat_id}: {e}")
+    # حذف المشتركين الغير نشطين
+    for chat_id in failed:
+        subscribers.discard(chat_id)
+    if failed:
+        save_subscribers()
+
+
+# ============================================================
+# ميزة الترندينج — العملات الاكثر بحثاً
+# ============================================================
+async def fetch_trending() -> list:
+    """جلب العملات الاكثر بحثا من CoinGecko"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = "https://api.coingecko.com/api/v3/search/trending"
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                data = await r.json()
+        coins = data.get("coins", [])
+        result = []
+        for item in coins:
+            c = item.get("item", {})
+            symbol = c.get("symbol", "").upper()
+            name   = c.get("name", "")
+            tags   = []
+            # استبعاد الكبار والميم
+            if symbol in EXCLUDED_SYMBOLS: continue
+            if is_meme_coin(symbol, name, tags): continue
+            for kw in EXCLUDED_SYMBOL_CONTAINS:
+                if kw in symbol.lower(): continue
+            result.append({
+                "symbol":   symbol,
+                "name":     name,
+                "rank":     c.get("market_cap_rank", 999),
+                "score":    c.get("score", 0),
+                "price_btc": c.get("price_btc", 0),
+                "thumb":    c.get("thumb", ""),
+            })
+        return result
+    except Exception as e:
+        logger.error(f"Trending error: {e}")
+        return []
+
+
+async def send_trending_alert(bot: Bot):
+    """ارسال تنبيه العملات الاكثر بحثا"""
+    logger.info("جلب الترندينج...")
+    trending = await fetch_trending()
+    if not trending:
+        return
+
+    scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    lines = [
+        "🔥 العملات الاكثر بحثا الان",
+        f"⏰ {scan_time}",
+        f"📡 المصدر: CoinGecko Trending",
+        "━━━━━━━━━━━━━━━━━━━━", ""
+    ]
+
+    for i, c in enumerate(trending[:10], 1):
+        rank_str = f"CMC #{c['rank']}" if c['rank'] and c['rank'] < 9999 else "غير مرتب"
+        lines.append(f"{i}. 🔍 {c['symbol']} — {escape_md(c['name'])}")
+        lines.append(f"   📊 {rank_str}")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━")
+    lines.append("💡 تحقق من اي عملة: /coin SYMBOL")
+
+    try:
+        await broadcast(bot, "\n".join(lines))
+        logger.info(f"تم ارسال الترندينج: {len(trending)} عملة")
+    except Exception as e:
+        logger.error(f"خطأ ارسال ترندينج: {e}")
+
+
+async def job_trending(context: ContextTypes.DEFAULT_TYPE):
+    await send_trending_alert(context.bot)
 
 
 # ============================================================
@@ -861,6 +997,16 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/chatid  — معرفة الـ Chat ID"
     )
 
+async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if chat_id in subscribers:
+        subscribers.discard(chat_id)
+        save_subscribers()
+        await update.message.reply_text("✅ تم الغاء اشتراكك. اكتب /start للاشتراك مجددا.")
+    else:
+        await update.message.reply_text("انت غير مشترك اصلا. اكتب /start للاشتراك.")
+
+
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📊 جاري جلب اعلى 30 عملة فوليم...")
     await send_volume_report(context.bot)
@@ -876,6 +1022,11 @@ async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 جاري جلب بيانات {context.args[0].upper()}...")
     result = await get_vol(context.args[0])
     await update.message.reply_text(result)
+
+async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 جاري جلب العملات الاكثر بحثا...")
+    await send_trending_alert(context.bot)
+
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -905,14 +1056,29 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"{i}. {c['symbol']}  نقاط: {c.get('score',0)}/100  ({c['price_change_24h']:+.1f}%)")
     await update.message.reply_text("\n".join(lines))
 
+async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """امر للادمن فقط"""
+    chat_id = update.effective_chat.id
+    if str(chat_id) != str(ADMIN_CHAT_ID):
+        await update.message.reply_text("هذا الامر للادمن فقط.")
+        return
+    await update.message.reply_text(
+        f"📊 احصائيات البوت:\n"
+        f"👥 المشتركين: {len(subscribers)}\n"
+        f"🚨 اشارات نشطة: {len(previous_signals)}\n"
+        f"📋 اخر تقرير: {len(previous_report)} عملة\n"
+        f"⏱ الفحص: كل 30 دقيقة"
+    )
+
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ البوت شغال\n"
-        f"📊 اخر تقرير: {len(previous_report)} عملة\n"
-        f"🚨 اشارات نشطة: {len(previous_signals)}\n"
-        f"⏱ تقرير كل {SCAN_INTERVAL_MINUTES} دقيقة\n"
-        f"🎯 حد الاشارة: {MIN_SCORE}/100\n"
-        f"📡 CMC (كل المنصات) + Binance TA"
+        f"👥 المشتركين: {len(subscribers)}\n"
+        f"📊 تقرير كل {SCAN_INTERVAL_MINUTES} دقيقة\n"
+        f"🔍 فحص اشارات كل 30 دقيقة\n"
+        f"🔥 ترندينج كل 6 ساعات\n"
+        f"📡 CMC + Binance"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -934,6 +1100,9 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("scan",   cmd_scan))
     app.add_handler(CommandHandler("vol",    cmd_vol))
+    app.add_handler(CommandHandler("stop",    cmd_stop))
+    app.add_handler(CommandHandler("stats",   cmd_stats))
+    app.add_handler(CommandHandler("trending", cmd_trending))
     app.add_handler(CommandHandler("info",   cmd_info))
     app.add_handler(CommandHandler("coin",   cmd_coin))
     app.add_handler(CommandHandler("top",    cmd_top))
@@ -943,14 +1112,19 @@ def main():
     # التقرير الدوري كل 4 ساعات
     app.job_queue.run_repeating(job_volume_report,
                                 interval=SCAN_INTERVAL_MINUTES*60, first=15)
-    # فحص الاشارات كل ساعة
+    # فحص الاشارات كل 30 دقيقة (يبعت بس عند التوافر)
     app.job_queue.run_repeating(job_check_signals,
-                                interval=3600, first=60)
+                                interval=1800, first=60)
+    # تنبيه الترندينج كل 6 ساعات
+    app.job_queue.run_repeating(job_trending,
+                                interval=21600, first=120)
 
+    load_subscribers()
     print("="*55)
     print("🚀 Altcoin Smart Scanner Bot")
-    print(f"📊 تقرير فوليم كل {SCAN_INTERVAL_MINUTES} دقيقة")
+    print(f"📊 تقرير فوليم كل {SCAN_INTERVAL_MINUTES} دقيقة (50 عملة - بدون تكرار 24h)")
     print("🚨 فحص اشارات كل ساعة")
+    print("🔥 ترندينج كل 6 ساعات")
     print("📡 CoinMarketCap + Binance")
     print("="*55)
 
