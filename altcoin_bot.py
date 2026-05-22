@@ -1,7 +1,7 @@
 """
 🚀 Altcoin Smart Scanner Bot - Ultimate Edition
 3 وظائف:
-1. كل 4 ساعات: اعلى 50عملة فوليم من كل المنصات
+1. كل 4 ساعات: اعلى 30 عملة فوليم من كل المنصات
 2. تنبيه فوري: لما تتوفر اشارة قوية (نظام النقاط)
 3. /vol SYMBOL: حجم تداول اي عملة بدون قيود
 """
@@ -17,7 +17,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
 TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
-ADMIN_CHAT_ID  = "6914157653"  
+ADMIN_CHAT_ID  = "6914157653"   
 CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
 
 # ==================== اعدادات التقرير الدوري ====================
@@ -220,16 +220,25 @@ async def fetch_cmc_single(session, symbol):
 
 
 async def fetch_klines(session, symbol, interval="1h", limit=48):
-    url    = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
+    """جلب بيانات الشموع من Gate.io"""
+    # Gate.io intervals: 1m,5m,15m,30m,1h,4h,8h,1d
+    url    = "https://api.gateio.ws/api/v4/spot/candlesticks"
+    params = {
+        "currency_pair": f"{symbol}_USDT",
+        "interval": interval,
+        "limit": limit
+    }
     try:
         async with session.get(url, params=params,
                                timeout=aiohttp.ClientTimeout(total=8)) as r:
             if r.status != 200: return []
             data = await r.json()
-        return [{"open": float(k[1]), "high": float(k[2]),
-                 "low":  float(k[3]), "close": float(k[4]),
-                 "volume": float(k[5])} for k in data]
+        # Gate.io format: [timestamp, volume, close, high, low, open, ...]
+        return [{"open":   float(k[5]),
+                 "high":   float(k[3]),
+                 "low":    float(k[4]),
+                 "close":  float(k[2]),
+                 "volume": float(k[1])} for k in data]
     except:
         return []
 
@@ -537,7 +546,7 @@ async def check_signals(bot: Bot):
             lines.append(f"   🌐 {c['num_market_pairs']} منصة  |  7d: {c['price_change_7d']:+.1f}%")
             if rs:      lines.append(f"   ✅ {' | '.join(rs[:3])}")
             if extras:  lines.append(f"   📌 {' · '.join(extras)}")
-            lines.append(f"   🔗 https://www.tradingview.com/chart/?symbol=BINANCE:{c['symbol']}USDT")
+            lines.append(f"   🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{c['symbol']}_USDT")
             lines.append("")
 
         if idx == len(chunks):
@@ -563,11 +572,13 @@ SUBS_FILE = "subscribers.json"
 
 def load_subscribers():
     global subscribers
+    # الادمن دايما مشترك
+    subscribers.add(int(ADMIN_CHAT_ID))
     try:
         if os.path.exists(SUBS_FILE):
             with open(SUBS_FILE, "r") as f:
                 data = json.load(f)
-            subscribers = set(data)
+            subscribers.update(set(data))
             logger.info(f"تم تحميل {len(subscribers)} مشترك")
     except Exception as e:
         logger.error(f"خطأ تحميل المشتركين: {e}")
@@ -964,7 +975,7 @@ async def get_coin_analysis(symbol: str) -> str:
 
         lines += [
             f"",
-            f"🔗 https://www.tradingview.com/chart/?symbol=BINANCE:{symbol}USDT",
+            f"🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{symbol}_USDT",
             f"━━━━━━━━━━━━━━━━━━━━",
             f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         ]
