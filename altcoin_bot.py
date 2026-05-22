@@ -16,9 +16,9 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
-TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
-CHAT_ID        = "6914157653"
-CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
+TELEGRAM_TOKEN = "ضع_التوكن_هنا"
+CHAT_ID        = "ضع_CHAT_ID_هنا"
+CMC_API_KEY    = "ضع_CMC_API_KEY_هنا"
 
 # ==================== اعدادات التقرير الدوري ====================
 SCAN_INTERVAL_MINUTES = 240   # كل 4 ساعات
@@ -57,13 +57,25 @@ previous_signals: dict = {}
 
 # ==================== قوائم الاستبعاد ====================
 EXCLUDED_SYMBOLS = {
+    # العملات الكبيرة
     "BTC","ETH","BNB","XRP","SOL","ADA","DOGE","TRX","AVAX","SHIB",
     "DOT","LINK","MATIC","LTC","BCH","XLM","ETC","UNI","ATOM","NEAR",
     "FIL","ICP","HBAR","VET","ALGO","EGLD","TON","SUI","APT","OP",
-    "ARB","INJ","SEI","TIA","PYTH","JUP","WLD",
+    "ARB","INJ","SEI","TIA","PYTH","JUP","WLD","RENDER","FET","TAO",
+    "IMX","GRT","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
+    "SAND","MANA","AXS","ENJ","CHZ","FLOW","GALA","THETA","FTM",
+    "ONE","ROSE","ZIL","ICX","QTUM","ZEC","XMR","DASH","DCR","XTZ",
+    "EOS","TRB","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
+    "ONT","ZEN","SC","DGB","RVN","IOST","STORJ","ANKR","CKB","CELR",
+    # Stablecoins
     "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
     "USDE","PYUSD","GUSD","LUSD","FRAX","SUSD","EURC","USDS",
-    "WBTC","WETH","STETH","CBETH","RETH","WBNB","WEETH",
+    "USD1","USDX","CUSD","MUSD","HUSD","USDJ","XUSD","ZUSD",
+    "DUSD","NUSD","PUSD","CRVUSD","DOLA","PAX","PAXG","BEAN",
+    # Wrapped tokens
+    "WBTC","WETH","STETH","CBETH","RETH","WBNB","WEETH","WSTETH",
+    "WMATIC","WAVAX","WSOL","WFTM","WONE","WXDAI","WROSE",
+    "BTCB","BTCST","HBTC","RENBTC","SBTC","TBTC",
 }
 
 MEME_SYMBOLS = {
