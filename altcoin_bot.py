@@ -103,23 +103,27 @@ MEME_TAGS = {
 }
 
 # كلمات تدل على wrapped/bridged/synthetic/stablecoin
-EXCLUDED_PREFIXES = ("w", "v", "b", "s", "r", "h", "c", "e", "x", "y", "z")
 EXCLUDED_KEYWORDS_IN_SYMBOL = {
     # Wrapped
     "wbnb","weth","wbtc","wmatic","wavax","wsol","wftm","wone","wxdai",
     # Bridged
     "btcb","btcst","hbtc","renbtc","sbtc","tbtc","vbtc","anybtc",
-    # Stablecoin variants
+    # Venus tokens
+    "vbnb","veth","vbtc","vusdt","vusdc","vbusd","vdai","vxvs",
+    # Stablecoin variants — اي حاجة فيها usd
     "usd","usdt","usdc","busd","dai","tusd","usdp","usdd","fdusd",
     "usde","pyusd","gusd","lusd","frax","susd","eurc","usds","usdx",
     "cusd","musd","husd","usdj","xusd","zusd","dusd","nusd","pusd",
-    "crvusd","dola","usd1","ust","vai","venus","vbnb","veth","vbtc",
-    # Venus/Compound/Aave tokens
-    "vtoken","ctoken","atoken","vatoken",
+    "rusd","rlusd","usad","usd1","ust","vai","dola","crvusd","bean",
+    # Gold/commodity pegged
+    "xaut","paxg","xagc","dgx","cache","gold","silver",
     # Synthetic/Liquid staking
     "steth","cbeth","reth","wsteth","weeth","frxeth","sfrxeth",
     "ankrbnb","bnbx","stkbnb","snbnb","beth","abnbb",
 }
+
+# كلمات في السيمبول تستوجب الاستبعاد فورا
+EXCLUDED_SUBSTRINGS = ("usd", "btc", "eth", "bnb", "xau", "xag", "gold", "silver")
 
 
 # ==================== ادوات ====================
@@ -134,24 +138,29 @@ def is_excluded_token(symbol, name, tags):
     for kw in MEME_KEYWORDS:
         if kw in sym or kw in nm: return True
 
-    # كلمات في السيمبول تدل على wrapped/synthetic/stable
-    for kw in EXCLUDED_KEYWORDS_IN_SYMBOL:
-        if sym == kw: return True
+    # اي سيمبول فيه usd او btc او eth او xau او gold
+    for sub in EXCLUDED_SUBSTRINGS:
+        if sub in sym: return True
+
+    # قائمة الكلمات المحددة
+    if sym in EXCLUDED_KEYWORDS_IN_SYMBOL: return True
 
     # اسم العملة يحتوي على كلمات مشبوهة
     excluded_name_keywords = {
-        "wrapped","bridged","synthetic","pegged","staked","liquid",
-        "vault","receipt","interest bearing","yield","share","lp token",
-        "usd coin","tether","binance usd","venus","compound","aave",
+        "wrapped","bridged","synthetic","pegged","staked","liquid staking",
+        "vault token","receipt token","interest bearing","lp token",
+        "usd coin","tether","binance usd","venus","compound","aave token",
+        "dollar","gold token","silver token","gold coin",
     }
     for kw in excluded_name_keywords:
         if kw in nm: return True
 
-    # السيمبول يبدأ بـ v أو b أو s ويكون طويل (غالبا wrapped)
-    if len(sym) >= 4:
-        if sym.startswith("v") and sym[1:] in [s.lower() for s in EXCLUDED_SYMBOLS]: return True
-        if sym.startswith("b") and sym[1:] in [s.lower() for s in EXCLUDED_SYMBOLS]: return True
-        if sym.startswith("w") and sym[1:] in [s.lower() for s in EXCLUDED_SYMBOLS]: return True
+    # السيمبول يبدأ بـ v/w/b ويكون نسخة من عملة كبيرة
+    excluded_lower = {s.lower() for s in EXCLUDED_SYMBOLS}
+    if len(sym) >= 3:
+        for prefix in ("v","w","b","r","s","h"):
+            if sym.startswith(prefix) and sym[1:] in excluded_lower:
+                return True
 
     return False
 
@@ -283,53 +292,55 @@ def calc_prev_pump(c):
                for i in range(1,min(20,len(c))))
 
 
-# ==================== نظام النقاط ====================
+# ==================== نظام النقاط (شرطين: فوليم عالي + نطاق ضيق) ====================
 def score_coin(candles, cmc):
     sc, rs, dt = 0, [], {}
     vc  = cmc.get("volume_change", 0)
     pc  = cmc.get("price_change_24h", 0)
-    p1h = cmc.get("price_change_1h", 0)
 
-    if not candles or len(candles) < 10:
-        rv = max(1.0, 1+vc/100)
-        if rv >= MIN_RVOL:  sc += SCORE_RVOL;    rs.append(f"RVOL {rv:.1f}x")
-        if abs(pc) > 5:     sc += SCORE_BREAKOUT; rs.append(f"سعر {pc:+.1f}%")
-        if p1h > 2:         sc += SCORE_MOMENTUM; rs.append(f"1h {p1h:+.1f}%")
-        dt = {"rvol": rv, "atr_dir": "unknown", "squeeze": False, "breakout": abs(pc)>5}
-        return {"score": sc, "reasons": rs, "details": dt}
+    # --- الشرط 1: فوليم عالي (50 نقطة) ---
+    rv = calc_rvol(candles) if candles and len(candles) >= 5 else max(1.0, 1+vc/100)
 
-    rv         = calc_rvol(candles)
-    _, atr_dir = calc_atr(candles)
-    bb         = calc_bb(candles)
-    brk        = calc_breakout(candles)
-    side       = calc_sideways(candles)
-    abso       = calc_absorption(candles)
-    mom        = calc_momentum(candles)
-    vt         = calc_vol_trend(candles)
-    pp         = calc_prev_pump(candles)
+    if rv >= 3.0:
+        sc += 50; rs.append(f"RVOL قوي جدا {rv:.1f}x")
+    elif rv >= MIN_RVOL:
+        sc += 40; rs.append(f"RVOL {rv:.1f}x")
+    elif rv >= 1.5:
+        sc += 20; rs.append(f"RVOL متوسط {rv:.1f}x")
+    elif vc >= 100:
+        sc += 35; rs.append(f"فوليم +{vc:.0f}%")
+    elif vc >= 50:
+        sc += 20; rs.append(f"فوليم +{vc:.0f}%")
 
-    if pp > MAX_PREV_PUMP:
-        return {"score": 0, "reasons": [f"pump سابق {pp:.1f}%"], "details": {}}
+    # --- الشرط 2: نطاق ضيق Squeeze (50 نقطة) ---
+    if candles and len(candles) >= 20:
+        bb   = calc_bb(candles)
+        side = calc_sideways(candles)
 
-    if rv >= MIN_RVOL:   sc += SCORE_RVOL;             rs.append(f"RVOL {rv:.1f}x")
-    elif rv >= 1.5:      sc += int(SCORE_RVOL*0.5);    rs.append(f"RVOL {rv:.1f}x")
-    if bb["squeeze"]:    sc += SCORE_SQUEEZE;           rs.append(f"Squeeze {bb['width']:.1f}%")
-    elif bb["width"]<8:  sc += int(SCORE_SQUEEZE*0.5);  rs.append(f"BB ضيق {bb['width']:.1f}%")
-    if brk and side:     sc += SCORE_BREAKOUT;          rs.append("Breakout+Sideways")
-    elif brk:            sc += int(SCORE_BREAKOUT*0.7); rs.append("Breakout")
-    if abso:             sc += SCORE_ABSORPTION;        rs.append("امتصاص بيع")
-    m = 0
-    if mom["green"] >= 3: m += SCORE_MOMENTUM;  rs.append("3 شموع خضر")
-    elif mom["green"]==2: m += int(SCORE_MOMENTUM*0.5)
-    if mom["fast"]:       m  = min(m+5, SCORE_MOMENTUM); rs.append("حركة سريعة")
-    sc += m
-    if atr_dir == "rising": sc += 5; rs.append("ATR ارتفاع")
-    if vt:                  sc += 5; rs.append("فوليم متصاعد")
+        if bb["squeeze"]:
+            sc += 50; rs.append(f"Squeeze قوي BB {bb['width']:.1f}%")
+        elif bb["width"] < 8:
+            sc += 35; rs.append(f"BB ضيق {bb['width']:.1f}%")
+        elif bb["width"] < 12 and side:
+            sc += 25; rs.append(f"Sideways + BB {bb['width']:.1f}%")
+        elif side:
+            sc += 15; rs.append("نطاق Sideways")
+        elif bb["width"] < 15:
+            sc += 10; rs.append(f"BB نسبي {bb['width']:.1f}%")
+    else:
+        # لو مفيش بيانات كافية، نعتمد على تغيير السعر المنخفض كمؤشر على الضيق
+        if abs(pc) < 3:
+            sc += 25; rs.append("حركة سعر هادئة")
+        elif abs(pc) < 6:
+            sc += 10; rs.append("حركة معتدلة")
 
-    dt = {"rvol":rv,"atr_dir":atr_dir,"bb_width":bb["width"],"squeeze":bb["squeeze"],
-          "breakout":brk,"sideways":side,"absorption":abso,"green":mom["green"],
-          "vol_trend":vt,"prev_pump":pp}
-    return {"score": min(sc,100), "reasons": rs, "details": dt}
+    dt = {
+        "rvol": rv,
+        "squeeze": sc >= MIN_SCORE,
+        "vol_trend": vc > 50,
+        "bb_width": calc_bb(candles)["width"] if candles and len(candles)>=20 else 999,
+    }
+    return {"score": min(sc, 100), "reasons": rs, "details": dt}
 
 
 # ==================== تحويل بيانات CMC ====================
