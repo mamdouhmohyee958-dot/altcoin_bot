@@ -16,9 +16,9 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
-TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
-CHAT_ID        = "6914157653"
-CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
+TELEGRAM_TOKEN = "ضع_التوكن_هنا"
+CHAT_ID        = "ضع_CHAT_ID_هنا"
+CMC_API_KEY    = "ضع_CMC_API_KEY_هنا"
 
 # ==================== اعدادات التقرير الدوري ====================
 SCAN_INTERVAL_MINUTES = 240   # كل 4 ساعات
@@ -102,14 +102,62 @@ MEME_TAGS = {
     "animal-racing","dog","cat","anime","fan-token",
 }
 
+# كلمات تدل على wrapped/bridged/synthetic/stablecoin
+EXCLUDED_PREFIXES = ("w", "v", "b", "s", "r", "h", "c", "e", "x", "y", "z")
+EXCLUDED_KEYWORDS_IN_SYMBOL = {
+    # Wrapped
+    "wbnb","weth","wbtc","wmatic","wavax","wsol","wftm","wone","wxdai",
+    # Bridged
+    "btcb","btcst","hbtc","renbtc","sbtc","tbtc","vbtc","anybtc",
+    # Stablecoin variants
+    "usd","usdt","usdc","busd","dai","tusd","usdp","usdd","fdusd",
+    "usde","pyusd","gusd","lusd","frax","susd","eurc","usds","usdx",
+    "cusd","musd","husd","usdj","xusd","zusd","dusd","nusd","pusd",
+    "crvusd","dola","usd1","ust","vai","venus","vbnb","veth","vbtc",
+    # Venus/Compound/Aave tokens
+    "vtoken","ctoken","atoken","vatoken",
+    # Synthetic/Liquid staking
+    "steth","cbeth","reth","wsteth","weeth","frxeth","sfrxeth",
+    "ankrbnb","bnbx","stkbnb","snbnb","beth","abnbb",
+}
+
 
 # ==================== ادوات ====================
-def is_meme_coin(symbol, name, tags):
+def is_excluded_token(symbol, name, tags):
+    """استبعاد الميم كوين + الـ wrapped/bridged/synthetic/stablecoin"""
+    sym = symbol.lower()
+    nm  = name.lower()
+
+    # ميم كوين
     if symbol in MEME_SYMBOLS: return True
     if tags and any(t in MEME_TAGS for t in tags): return True
     for kw in MEME_KEYWORDS:
-        if kw in symbol.lower() or kw in name.lower(): return True
+        if kw in sym or kw in nm: return True
+
+    # كلمات في السيمبول تدل على wrapped/synthetic/stable
+    for kw in EXCLUDED_KEYWORDS_IN_SYMBOL:
+        if sym == kw: return True
+
+    # اسم العملة يحتوي على كلمات مشبوهة
+    excluded_name_keywords = {
+        "wrapped","bridged","synthetic","pegged","staked","liquid",
+        "vault","receipt","interest bearing","yield","share","lp token",
+        "usd coin","tether","binance usd","venus","compound","aave",
+    }
+    for kw in excluded_name_keywords:
+        if kw in nm: return True
+
+    # السيمبول يبدأ بـ v أو b أو s ويكون طويل (غالبا wrapped)
+    if len(sym) >= 4:
+        if sym.startswith("v") and sym[1:] in [s.lower() for s in EXCLUDED_SYMBOLS]: return True
+        if sym.startswith("b") and sym[1:] in [s.lower() for s in EXCLUDED_SYMBOLS]: return True
+        if sym.startswith("w") and sym[1:] in [s.lower() for s in EXCLUDED_SYMBOLS]: return True
+
     return False
+
+
+def is_meme_coin(symbol, name, tags):
+    return is_excluded_token(symbol, name, tags)
 
 def fmt_vol(v):
     if v >= 1_000_000_000: return f"{v/1_000_000_000:.2f}B$"
@@ -483,6 +531,196 @@ async def check_signals(bot: Bot):
 
 
 # ============================================================
+# ميزة /info — التوكنوميكس الكاملة
+# ============================================================
+async def get_token_info(symbol: str) -> str:
+    symbol = symbol.upper().strip()
+    results = {}
+
+    async with aiohttp.ClientSession() as session:
+
+        # --- CMC: بيانات اساسية + supply ---
+        cmc_coin = await fetch_cmc_single(session, symbol)
+        if cmc_coin:
+            q            = cmc_coin.get("quote",{}).get("USD",{})
+            results["price"]         = float(q.get("price",0) or 0)
+            results["pc24"]          = float(q.get("percent_change_24h",0) or 0)
+            results["volume_24h"]    = float(q.get("volume_24h",0) or 0)
+            results["market_cap"]    = float(q.get("market_cap",0) or 0)
+            results["rank"]          = cmc_coin.get("cmc_rank",999)
+            results["name"]          = cmc_coin.get("name","")
+            results["circulating"]   = float(cmc_coin.get("circulating_supply",0) or 0)
+            results["total_supply"]  = float(cmc_coin.get("total_supply",0) or 0)
+            results["max_supply"]    = cmc_coin.get("max_supply")
+            results["pairs"]         = cmc_coin.get("num_market_pairs",0)
+            results["date_added"]    = cmc_coin.get("date_added","")[:10]
+            results["tags"]          = cmc_coin.get("tags",[])
+            results["cmc_id"]        = cmc_coin.get("id","")
+
+        # --- CoinGecko: holders + unlock info ---
+        try:
+            cg_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
+            async with session.get(cg_url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                cg_data = await r.json()
+            coins_list = cg_data.get("coins",[])
+            cg_id = next((c["id"] for c in coins_list
+                          if c.get("symbol","").upper() == symbol), None)
+
+            if cg_id:
+                results["cg_id"] = cg_id
+                # جلب تفاصيل العملة
+                detail_url = f"https://api.coingecko.com/api/v3/coins/{cg_id}?localization=false&tickers=false&market_data=true&community_data=true&developer_data=false"
+                async with session.get(detail_url, timeout=aiohttp.ClientTimeout(total=12)) as r:
+                    detail = await r.json()
+
+                # عدد الحاملين من community data
+                community = detail.get("community_data",{})
+                results["twitter_followers"] = community.get("twitter_followers",0) or 0
+                results["reddit_subscribers"] = community.get("reddit_subscribers",0) or 0
+
+                # بيانات السوق من CoinGecko
+                md = detail.get("market_data",{})
+                if not results.get("circulating"):
+                    results["circulating"]  = float(md.get("circulating_supply",0) or 0)
+                if not results.get("total_supply"):
+                    results["total_supply"] = float(md.get("total_supply",0) or 0)
+                if not results.get("max_supply"):
+                    results["max_supply"]   = md.get("max_supply")
+
+                # نسبة التداول
+                if results.get("total_supply",0) > 0 and results.get("circulating",0) > 0:
+                    results["circ_pct"] = results["circulating"] / results["total_supply"] * 100
+                else:
+                    results["circ_pct"] = None
+
+                # Links
+                links = detail.get("links",{})
+                results["website"]  = (links.get("homepage",[None])[0] or "").strip("/")
+                results["explorer"] = (links.get("blockchain_site",[None])[0] or "").strip("/")
+
+        except Exception as e:
+            logger.debug(f"CoinGecko error: {e}")
+
+        # --- Token Unlock: من TokenUnlocks API (مجاني) ---
+        try:
+            unlock_url = f"https://token-unlocks.app/api/project?symbol={symbol.lower()}"
+            async with session.get(unlock_url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                if r.status == 200:
+                    unlock_data = await r.json()
+                    unlocks = unlock_data.get("upcomingUnlocks",[]) if isinstance(unlock_data,dict) else []
+                    if unlocks:
+                        next_unlock = unlocks[0]
+                        results["next_unlock_date"]   = next_unlock.get("date","")[:10]
+                        results["next_unlock_amount"] = float(next_unlock.get("amount",0) or 0)
+                        results["next_unlock_pct"]    = float(next_unlock.get("percentage",0) or 0)
+        except:
+            pass
+
+        # --- Etherscan/BSCScan: عدد الحاملين (لو ERC20/BEP20) ---
+        # نحاول نجيب contract address من CoinGecko
+        try:
+            if results.get("cg_id"):
+                contract_url = f"https://api.coingecko.com/api/v3/coins/{results['cg_id']}"
+                async with session.get(contract_url, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                    cdata = await r.json()
+                platforms = cdata.get("platforms",{})
+                eth_contract = platforms.get("ethereum","")
+                bsc_contract = platforms.get("binance-smart-chain","")
+
+                if eth_contract:
+                    eth_url = f"https://api.etherscan.io/api?module=token&action=tokeninfo&contractaddress={eth_contract}&apikey=YourApiKeyToken"
+                    async with session.get(eth_url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                        eth_data = await r.json()
+                    if eth_data.get("status") == "1":
+                        token_info = eth_data.get("result",[{}])
+                        if token_info:
+                            results["holders"] = int(token_info[0].get("holdersCount",0) or 0)
+
+                elif bsc_contract:
+                    bsc_url = f"https://api.bscscan.com/api?module=token&action=tokeninfo&contractaddress={bsc_contract}&apikey=YourApiKeyToken"
+                    async with session.get(bsc_url, timeout=aiohttp.ClientTimeout(total=8)) as r:
+                        bsc_data = await r.json()
+                    if bsc_data.get("status") == "1":
+                        token_info = bsc_data.get("result",[{}])
+                        if token_info:
+                            results["holders"] = int(token_info[0].get("holdersCount",0) or 0)
+        except:
+            pass
+
+    # ==================== بناء الرسالة ====================
+    if not results.get("name"):
+        return f"العملة {symbol} مش موجودة في CMC"
+
+    def fmt_supply(v):
+        if not v or v == 0: return "غير محدد"
+        if v >= 1_000_000_000: return f"{v/1_000_000_000:.2f}B"
+        if v >= 1_000_000:     return f"{v/1_000_000:.2f}M"
+        return f"{v/1_000:.1f}K"
+
+    arrow = "🟢" if results.get("pc24",0) > 0 else "🔴"
+    lines = [
+        f"📋 توكنوميكس {symbol} — {escape_md(results.get('name',''))}",
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"{arrow} السعر: {fmt_price(results.get('price',0))}  ({results.get('pc24',0):+.2f}%)",
+        f"💰 فوليم 24h: {fmt_vol(results.get('volume_24h',0))}",
+        f"💎 Market Cap: {fmt_vol(results.get('market_cap',0))}",
+        f"📊 رانك CMC: #{results.get('rank',999)}",
+        f"",
+        f"🪙 التوكنوميكس:",
+        f"   العملات المتداولة: {fmt_supply(results.get('circulating',0))}",
+        f"   Total Supply: {fmt_supply(results.get('total_supply',0))}",
+        f"   Max Supply: {fmt_supply(results.get('max_supply',0)) if results.get('max_supply') else 'غير محدود'}",
+    ]
+
+    # نسبة التداول
+    if results.get("circ_pct"):
+        pct = results["circ_pct"]
+        bar_filled = int(pct / 10)
+        bar = "█" * bar_filled + "░" * (10 - bar_filled)
+        lines.append(f"   نسبة المتداول: {pct:.1f}% [{bar}]")
+
+    # عدد الحاملين
+    if results.get("holders",0) > 0:
+        lines.append(f"   عدد الحاملين: {results['holders']:,}")
+    else:
+        lines.append(f"   عدد الحاملين: غير متاح")
+
+    # موعد فك العملات
+    lines.append(f"")
+    lines.append(f"🔓 فك العملات (Unlock):")
+    if results.get("next_unlock_date"):
+        lines.append(f"   الموعد القادم: {results['next_unlock_date']}")
+        if results.get("next_unlock_amount",0) > 0:
+            lines.append(f"   الكمية: {fmt_supply(results['next_unlock_amount'])}")
+        if results.get("next_unlock_pct",0) > 0:
+            lines.append(f"   نسبة من التوتال: {results['next_unlock_pct']:.2f}%")
+    else:
+        lines.append(f"   لا يوجد بيانات unlock متاحة")
+        lines.append(f"   تحقق يدوياً: https://token.unlocks.app/{symbol.lower()}")
+
+    # Community
+    if results.get("twitter_followers",0) > 0 or results.get("reddit_subscribers",0) > 0:
+        lines.append(f"")
+        lines.append(f"👥 المجتمع:")
+        if results.get("twitter_followers",0) > 0:
+            lines.append(f"   Twitter: {results['twitter_followers']:,}")
+        if results.get("reddit_subscribers",0) > 0:
+            lines.append(f"   Reddit: {results['reddit_subscribers']:,}")
+
+    # تاريخ الاضافة
+    if results.get("date_added"):
+        lines.append(f"")
+        lines.append(f"📅 تاريخ الاضافة على CMC: {results['date_added']}")
+
+    lines += [
+        f"━━━━━━━━━━━━━━━━━━━━",
+        f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"📡 CMC + CoinGecko",
+    ]
+    return "\n".join(lines)
+
+
+# ============================================================
 # الوظيفة 3: /vol — حجم اي عملة بدون قيود
 # ============================================================
 async def get_vol(symbol: str) -> str:
@@ -604,6 +842,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "الاوامر:\n"
         "/report  — تقرير فوري لاعلى 30 فوليم\n"
         "/scan    — فحص الاشارات التقنية الان\n"
+        "/info ETH — توكنوميكس + unlock + holders\n"
         "/vol ETH — حجم تداول اي عملة\n"
         "/coin ETH — تحليل كامل لعملة\n"
         "/top     — افضل 5 اشارات\n"
@@ -626,6 +865,16 @@ async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔍 جاري جلب بيانات {context.args[0].upper()}...")
     result = await get_vol(context.args[0])
     await update.message.reply_text(result)
+
+async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("استخدم: /info اسم_العملة\nمثال: /info ETH")
+        return
+    symbol = context.args[0].upper()
+    await update.message.reply_text(f"🔍 جاري جلب توكنوميكس {symbol}... (ثواني)")
+    result = await get_token_info(symbol)
+    await update.message.reply_text(result, disable_web_page_preview=True)
+
 
 async def cmd_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -674,6 +923,7 @@ def main():
     app.add_handler(CommandHandler("report", cmd_report))
     app.add_handler(CommandHandler("scan",   cmd_scan))
     app.add_handler(CommandHandler("vol",    cmd_vol))
+    app.add_handler(CommandHandler("info",   cmd_info))
     app.add_handler(CommandHandler("coin",   cmd_coin))
     app.add_handler(CommandHandler("top",    cmd_top))
     app.add_handler(CommandHandler("status", cmd_status))
