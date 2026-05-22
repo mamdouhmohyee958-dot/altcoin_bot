@@ -26,7 +26,7 @@ TOP_DISPLAY           = 50    # اعلى 50 عملة فوليم
 CMC_LIMIT             = 500   # نجيب اول 500 من CMC
 
 # ==================== اعدادات الاشارات ====================
-MIN_SCORE          = 60       # الحد الادنى للاشارة
+MIN_SCORE          = 75       # الحد الادنى للاشارة
 MIN_RVOL           = 2.5      # RVOL > 2.5
 MAX_PREV_PUMP      = 12.0     # استبعاد pump سابق > 12%
 MIN_VOL_FOR_SIGNAL = 2_000_000
@@ -54,7 +54,8 @@ logger = logging.getLogger(__name__)
 
 previous_report:  list = []
 previous_signals: dict = {}
-seen_coins:       dict = {}   # عملة: timestamp اخر ظهور (24 ساعة cooldown)
+seen_coins:       dict = {}   # عملة: timestamp اخر ظهور في التقرير (24 ساعة)
+seen_signals:     dict = {}   # عملة: timestamp اخر اشارة (24 ساعة cooldown)
 trending_cache:   dict = {}   # cache للترندينج
 subscribers:      set  = set()  # كل المشتركين في البوت
 
@@ -498,10 +499,24 @@ async def check_signals(bot: Bot):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     signals = [r for r in results if r and not isinstance(r, Exception)]
+
+    # فلترة: استبعاد العملات اللي اتبعتت في اخر 24 ساعة
+    from datetime import timedelta
+    fresh_signals = []
+    for c in signals:
+        sym = c["symbol"]
+        if sym in seen_signals:
+            elapsed = datetime.now() - seen_signals[sym]
+            if elapsed.total_seconds() < 86400:
+                logger.info(f"تخطي {sym} — اشارة مكررة ({elapsed.seconds//3600}h مضت)")
+                continue
+        fresh_signals.append(c)
+
+    signals = fresh_signals
     signals.sort(key=lambda x: x.get("score",0), reverse=True)
 
     if not signals:
-        logger.info("لا توجد اشارات قوية الان")
+        logger.info("لا توجد اشارات جديدة الان (كل الاشارات مكررة او score < 75)")
         return
 
     scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -559,6 +574,9 @@ async def check_signals(bot: Bot):
         except Exception as e:
             logger.error(f"خطأ ارسال اشارة: {e}")
 
+    # سجل العملات اللي اتبعتت
+    for c in signals:
+        seen_signals[c["symbol"]] = datetime.now()
     previous_signals = {c["symbol"]: c for c in signals}
     logger.info(f"تم ارسال {len(signals)} اشارة")
 
