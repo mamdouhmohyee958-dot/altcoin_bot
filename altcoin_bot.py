@@ -551,7 +551,7 @@ async def check_signals(bot: Bot):
 
         if idx == len(chunks):
             lines.append("━━━━━━━━━━━━━━━━━━━━")
-            lines.append("📡 CMC + Binance Technical Analysis")
+            lines.append("📡 CMC + Gate.io")
 
         try:
             await broadcast(bot, "\n".join(lines), disable_preview=True)
@@ -1089,7 +1089,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 تقرير كل {SCAN_INTERVAL_MINUTES} دقيقة\n"
         f"🔍 فحص اشارات كل 30 دقيقة\n"
         f"🔥 ترندينج كل 6 ساعات\n"
-        f"📡 CMC + Binance"
+        f"📡 CMC + Gate.io"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1136,7 +1136,7 @@ def main():
     print(f"📊 تقرير فوليم كل {SCAN_INTERVAL_MINUTES} دقيقة (50 عملة - بدون تكرار 24h)")
     print("🚨 فحص اشارات كل ساعة")
     print("🔥 ترندينج كل 6 ساعات")
-    print("📡 CoinMarketCap + Binance")
+    print("📡 CMC + Gate.io")
     print("="*55)
 
     app.run_polling(drop_pending_updates=True)
