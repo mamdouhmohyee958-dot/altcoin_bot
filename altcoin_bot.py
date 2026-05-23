@@ -388,7 +388,7 @@ async def send_volume_report(bot: Bot):
         raw = await fetch_cmc(session, limit=CMC_LIMIT)
 
     if not raw:
-        await bot.send_message(chat_id=CHAT_ID, text="فشل جلب البيانات من CMC")
+        await broadcast(bot, "فشل جلب البيانات من CMC")
         return
 
     coins = []
@@ -427,7 +427,7 @@ async def send_volume_report(bot: Bot):
         lines = []
         if idx == 1:
             lines += [
-                "📊 اعلى 30 Altcoin فوليم — كل المنصات",
+                "📊 اعلى 50 Altcoin فوليم — كل المنصات",
                 f"⏰ {scan_time}",
                 f"📡 المصدر: CoinMarketCap",
                 "━━━━━━━━━━━━━━━━━━━━", ""
