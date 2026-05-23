@@ -19,7 +19,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
 ADMIN_CHAT_ID  = "6914157653"   
 CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
-
 # ==================== اعدادات التقرير الدوري ====================
 SCAN_INTERVAL_MINUTES = 240   # كل 4 ساعات
 TOP_DISPLAY           = 50    # اعلى 50 عملة فوليم
@@ -438,7 +437,7 @@ def parse_coin(coin):
 # ============================================================
 # الوظيفة 1: التقرير الدوري — اعلى 30 عملة فوليم كل 4 ساعات
 # ============================================================
-async def send_volume_report(bot: Bot):
+async def send_volume_report(bot: Bot, target_chat: int = None):
     global previous_report
     logger.info("التقرير الدوري: جلب اعلى عملات فوليم...")
     scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -520,7 +519,10 @@ async def send_volume_report(bot: Bot):
             lines.append("💡 لحجم عملة: /vol SYMBOL")
 
         try:
-            await broadcast(bot, "\n".join(lines), disable_preview=True)
+            if target_chat:
+                await bot.send_message(chat_id=target_chat, text="\n".join(lines), disable_web_page_preview=True)
+            else:
+                await broadcast(bot, "\n".join(lines), disable_preview=True)
             await asyncio.sleep(0.5)
         except Exception as e:
             logger.error(f"خطأ ارسال تقرير: {e}")
@@ -531,7 +533,7 @@ async def send_volume_report(bot: Bot):
 # ============================================================
 # الوظيفة 2: تنبيه الاشارات — يُرسل فقط عند توفر اشارة قوية
 # ============================================================
-async def check_signals(bot: Bot):
+async def check_signals(bot: Bot, target_chat: int = None):
     global previous_signals
     logger.info("فحص الاشارات التقنية...")
 
@@ -643,7 +645,10 @@ async def check_signals(bot: Bot):
             lines.append("📡 CMC + Gate.io")
 
         try:
-            await broadcast(bot, "\n".join(lines), disable_preview=True)
+            if target_chat:
+                await bot.send_message(chat_id=target_chat, text="\n".join(lines), disable_web_page_preview=True)
+            else:
+                await broadcast(bot, "\n".join(lines), disable_preview=True)
             await asyncio.sleep(0.5)
         except Exception as e:
             logger.error(f"خطأ ارسال اشارة: {e}")
@@ -765,7 +770,7 @@ async def fetch_trending() -> list:
         return []
 
 
-async def send_trending_alert(bot: Bot):
+async def send_trending_alert(bot: Bot, target_chat: int = None):
     """ارسال تنبيه العملات الاكثر بحثا"""
     logger.info("جلب الترندينج...")
     trending = await fetch_trending()
@@ -790,7 +795,10 @@ async def send_trending_alert(bot: Bot):
     lines.append("💡 تحقق من اي عملة: /coin SYMBOL")
 
     try:
-        await broadcast(bot, "\n".join(lines))
+        if target_chat:
+            await bot.send_message(chat_id=target_chat, text="\n".join(lines))
+        else:
+            await broadcast(bot, "\n".join(lines))
         logger.info(f"تم ارسال الترندينج: {len(trending)} عملة")
     except Exception as e:
         logger.error(f"خطأ ارسال ترندينج: {e}")
@@ -1142,7 +1150,7 @@ async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 جاري فحص الاشارات التقنية...")
-    await check_signals(context.bot)
+    await check_signals(context.bot, target_chat=update.effective_chat.id)
 
 async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -1154,7 +1162,7 @@ async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 جاري جلب العملات الاكثر بحثا...")
-    await send_trending_alert(context.bot)
+    await send_trending_alert(context.bot, target_chat=update.effective_chat.id)
 
 
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
