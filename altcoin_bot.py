@@ -131,6 +131,18 @@ EXCLUDED_SUBSTRINGS = ("usd", "btc", "eth", "bnb", "xau", "xag", "gold", "silver
 
 
 # ==================== ادوات ====================
+def is_coin_cooldown(symbol: str) -> bool:
+    """هل العملة ظهرت في التقرير في اخر 24 ساعة؟"""
+    if symbol not in seen_coins:
+        return False
+    elapsed = (datetime.now() - seen_coins[symbol]).total_seconds()
+    return elapsed < 86400
+
+def mark_coin_seen(symbol: str):
+    """سجل وقت ظهور العملة في التقرير"""
+    seen_coins[symbol] = datetime.now()
+
+
 def is_excluded_token(symbol, name, tags):
     """استبعاد الميم كوين + الـ wrapped/bridged/synthetic/stablecoin"""
     sym = symbol.lower()
@@ -405,18 +417,26 @@ async def send_volume_report(bot: Bot):
     # ترتيب حسب الفوليم
     coins.sort(key=lambda x: x["volume_24h"], reverse=True)
 
-    # تطبيق الـ 24h cooldown
-    filtered = []
-    for c in coins:
-        if not is_coin_cooldown(c["symbol"]):
-            filtered.append(c)
-        if len(filtered) >= TOP_DISPLAY:
-            break
+    # فصل العملات: جديدة (لم تظهر في 24h) و قديمة (ظهرت)
+    fresh = [c for c in coins if not is_coin_cooldown(c["symbol"])]
+    old_c = [c for c in coins if is_coin_cooldown(c["symbol"])]
 
-    top30 = filtered
-    # سجّل العملات اللي هتظهر
+    logger.info(f"فوليم: {len(fresh)} جديدة، {len(old_c)} في cooldown")
+
+    if len(fresh) >= TOP_DISPLAY:
+        # عندنا 50 جديدة او اكثر — خد اول 50 جديدة بس
+        top30 = fresh[:TOP_DISPLAY]
+    else:
+        # الجديدة اقل من 50 — خد كل الجديدة + كمّل من القديمة
+        needed = TOP_DISPLAY - len(fresh)
+        top30  = fresh + old_c[:needed]
+        logger.info(f"اضفنا {needed} من القديمة لاكمال الـ 50")
+
+    # سجل الجديدة بس في الـ cooldown
     for c in top30:
-        mark_coin_seen(c["symbol"])
+        if not is_coin_cooldown(c["symbol"]):
+            seen_coins[c["symbol"]] = datetime.now()
+    save_seen_coins()
     previous_report = top30
 
     # بناء الرسائل (10 في كل رسالة)
@@ -586,7 +606,27 @@ async def check_signals(bot: Bot):
 # ============================================================
 import json, os
 
-SUBS_FILE = "subscribers.json"
+SUBS_FILE  = "subscribers.json"
+SEEN_FILE  = "seen_coins.json"
+
+def load_seen_coins():
+    global seen_coins
+    try:
+        if os.path.exists(SEEN_FILE):
+            with open(SEEN_FILE, "r") as f:
+                data = json.load(f)
+            seen_coins = {k: datetime.fromisoformat(v) for k, v in data.items()}
+            logger.info(f"تم تحميل {len(seen_coins)} عملة من seen_coins")
+    except Exception as e:
+        logger.error(f"خطأ تحميل seen_coins: {e}")
+
+def save_seen_coins():
+    try:
+        with open(SEEN_FILE, "w") as f:
+            json.dump({k: v.isoformat() for k, v in seen_coins.items()}, f)
+    except Exception as e:
+        logger.error(f"خطأ حفظ seen_coins: {e}")
+
 
 def load_subscribers():
     global subscribers
@@ -1145,6 +1185,7 @@ def main():
     app.add_handler(CommandHandler("chatid", cmd_chatid))
 
     load_subscribers()
+    load_seen_coins()
 
     # التقرير الدوري كل 4 ساعات — اول تقرير بعد 30 ثانية
     app.job_queue.run_repeating(job_volume_report,
