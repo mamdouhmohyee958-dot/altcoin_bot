@@ -547,11 +547,8 @@ async def check_signals(bot: Bot):
             if symbol in EXCLUDED_SYMBOLS: continue
             if is_meme_coin(symbol, name, tags): continue
             d = parse_coin(c)
+            # فلتر واحد بس: فوليم minimum
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
-            if d["market_cap"] > MAX_MARKET_CAP: continue
-            if abs(d["price_change_24h"]) < 1.5 and d["volume_change"] < 50: continue
-            if is_dead_coin(d): continue
-            if is_stock_token(d["symbol"], d["name"], d.get("tags",[])): continue
             candidates.append(d)
 
         # تحليل تقني
