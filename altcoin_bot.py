@@ -106,6 +106,23 @@ MEME_TAGS = {
     "animal-racing","dog","cat","anime","fan-token",
 }
 
+# الأسهم والـ equity tokens
+STOCK_TAGS = {
+    "equity-token","tokenized-stock","stock","securities","asset-backed",
+    "real-world-assets","rwa","commodities","tokenized-gold",
+    "tokenized-silver","etf","index","fund",
+}
+
+STOCK_KEYWORDS = {
+    "stock","share","equity","aapl","tsla","amzn","googl","msft",
+    "nvda","meta","nflx","spy","qqq","index","fund","etf",
+}
+
+# معايير حيوية العملة
+MIN_PRICE_CHANGE_7D  = 1.0   # تغيير سعر 7 أيام minimum 1% (بالقيمة المطلقة)
+MIN_PRICE_CHANGE_24H = 0.3   # تغيير سعر 24h minimum 0.3%
+MIN_VOLUME_RATIO     = 0.1   # الفوليم لازم يكون على الأقل 10% من المتوسط
+
 # كلمات تدل على wrapped/bridged/synthetic/stablecoin
 EXCLUDED_KEYWORDS_IN_SYMBOL = {
     # Wrapped
@@ -177,6 +194,36 @@ def is_excluded_token(symbol, name, tags):
         for prefix in ("v","w","b","r","s","h"):
             if sym.startswith(prefix) and sym[1:] in excluded_lower:
                 return True
+
+    return False
+
+
+def is_stock_token(symbol, name, tags):
+    """استبعاد الأسهم والـ equity tokens"""
+    if tags and any(t in STOCK_TAGS for t in tags):
+        return True
+    sym = symbol.lower()
+    nm  = name.lower()
+    for kw in STOCK_KEYWORDS:
+        if kw in sym or kw in nm:
+            return True
+    return False
+
+
+def is_dead_coin(coin_data: dict) -> bool:
+    """استبعاد العملات الميتة أو بدون زخم"""
+    pc24 = abs(coin_data.get("price_change_24h", 0) or 0)
+    pc7d = abs(coin_data.get("price_change_7d", 0) or 0)
+    vc   = abs(coin_data.get("volume_change", 0) or 0)
+    vol  = coin_data.get("volume_24h", 0) or 0
+
+    # لو السعر ماتحركش خالص في 7 أيام
+    if pc7d < MIN_PRICE_CHANGE_7D and pc24 < MIN_PRICE_CHANGE_24H:
+        return True
+
+    # لو الفوليم ضعيف جداً
+    if vol < 100_000:
+        return True
 
     return False
 
@@ -410,8 +457,10 @@ async def send_volume_report(bot: Bot):
         tags   = [t.lower() for t in c.get("tags",[])]
         if symbol in EXCLUDED_SYMBOLS: continue
         if is_meme_coin(symbol, name, tags): continue
+        if is_stock_token(symbol, name, tags): continue
         d = parse_coin(c)
         if d["volume_24h"] < MIN_VOLUME_REPORT: continue
+        if is_dead_coin(d): continue
         coins.append(d)
 
     # ترتيب حسب الفوليم
@@ -501,6 +550,8 @@ async def check_signals(bot: Bot):
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
             if d["market_cap"] > MAX_MARKET_CAP: continue
             if abs(d["price_change_24h"]) < 1.5 and d["volume_change"] < 50: continue
+            if is_dead_coin(d): continue
+            if is_stock_token(d["symbol"], d["name"], d.get("tags",[])): continue
             candidates.append(d)
 
         # تحليل تقني
@@ -510,7 +561,13 @@ async def check_signals(bot: Bot):
             sc      = res["score"]
             if sc < MIN_SCORE: return None
             rv = res["details"].get("rvol", 1.0)
-            if rv < MIN_RVOL and len(candles) > 5: return None
+            # لو مفيش بيانات Gate.io، نعتمد على CMC فوليم تشينج
+            if len(candles) <= 5:
+                vc = coin.get("volume_change", 0)
+                if vc < 50:  # فوليم تشينج اقل من 50% مش مفيد
+                    return None
+            else:
+                if rv < MIN_RVOL: return None
             coin.update({"score": sc, "reasons": res["reasons"],
                          "details": res["details"], "rvol": rv})
             return coin
