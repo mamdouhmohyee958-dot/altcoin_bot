@@ -1002,10 +1002,16 @@ async def get_coin_analysis(symbol: str) -> str:
 
 # ==================== Scheduled Jobs ====================
 async def job_volume_report(context: ContextTypes.DEFAULT_TYPE):
-    await send_volume_report(context.bot)
+    try:
+        await send_volume_report(context.bot)
+    except Exception as e:
+        logger.error(f"خطأ في job_volume_report: {e}")
 
 async def job_check_signals(context: ContextTypes.DEFAULT_TYPE):
-    await check_signals(context.bot)
+    try:
+        await check_signals(context.bot)
+    except Exception as e:
+        logger.error(f"خطأ في job_check_signals: {e}")
 
 
 # ==================== اوامر البوت ====================
@@ -1138,17 +1144,17 @@ def main():
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("chatid", cmd_chatid))
 
-    # التقرير الدوري كل 4 ساعات
-    app.job_queue.run_repeating(job_volume_report,
-                                interval=SCAN_INTERVAL_MINUTES*60, first=15)
-    # فحص الاشارات كل 30 دقيقة (يبعت بس عند التوافر)
-    app.job_queue.run_repeating(job_check_signals,
-                                interval=1800, first=60)
-    # تنبيه الترندينج كل 6 ساعات
-    app.job_queue.run_repeating(job_trending,
-                                interval=21600, first=120)
-
     load_subscribers()
+
+    # التقرير الدوري كل 4 ساعات — اول تقرير بعد 30 ثانية
+    app.job_queue.run_repeating(job_volume_report,
+                                interval=SCAN_INTERVAL_MINUTES*60, first=30)
+    # فحص الاشارات كل 30 دقيقة — اول فحص بعد دقيقتين
+    app.job_queue.run_repeating(job_check_signals,
+                                interval=1800, first=120)
+    # تنبيه الترندينج كل 6 ساعات — اول تنبيه بعد 3 دقائق
+    app.job_queue.run_repeating(job_trending,
+                                interval=21600, first=180)
     print("="*55)
     print("🚀 Altcoin Smart Scanner Bot")
     print(f"📊 تقرير فوليم كل {SCAN_INTERVAL_MINUTES} دقيقة (50 عملة - بدون تكرار 24h)")
