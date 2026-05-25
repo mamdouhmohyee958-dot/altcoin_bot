@@ -1,9 +1,9 @@
 """
-🚀 Altcoin Smart Scanner Bot - Ultimate Edition
-3 وظائف:
-1. كل 4 ساعات: اعلى 30 عملة فوليم من كل المنصات
-2. تنبيه فوري: لما تتوفر اشارة قوية (نظام النقاط)
-3. /vol SYMBOL: حجم تداول اي عملة بدون قيود
+🚀 Altcoin Smart Scanner Bot - Ultimate Edition v2
+التغييرات:
+1. التقرير: أعلى 50 عملة زادت سيولتها في 24 ساعة (volume_change %) مش مجرد أعلى فوليم
+2. إلغاء الإرسال المزدوج — البوت يبعت للأدمن فقط
+3. فلتر البامب: شروط إضافية + لا يبعت إلا لو النقاط >= 75
 """
 
 import asyncio
@@ -17,29 +17,34 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
 TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
-ADMIN_CHAT_ID  = "6914157653"   
+ADMIN_CHAT_ID  = "6914157653"
 CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
+
 # ==================== اعدادات التقرير الدوري ====================
 SCAN_INTERVAL_MINUTES = 240   # كل 4 ساعات
-TOP_DISPLAY           = 50    # اعلى 50 عملة فوليم
+TOP_DISPLAY           = 50    # اعلى 50 عملة
 CMC_LIMIT             = 500   # نجيب اول 500 من CMC
 
 # ==================== اعدادات الاشارات ====================
-MIN_SCORE          = 75       # الحد الادنى للاشارة
+MIN_SCORE          = 75       # الحد الادنى للاشارة — لا يبعت إلا فوق 75
 MIN_RVOL           = 2.5      # RVOL > 2.5
 MAX_PREV_PUMP      = 12.0     # استبعاد pump سابق > 12%
 MIN_VOL_FOR_SIGNAL = 2_000_000
 
 # ==================== اعدادات الفلترة ====================
 MAX_MARKET_CAP     = 2_000_000_000
-MIN_VOLUME_REPORT  = 5_000_000   # للتقرير الدوري
+MIN_VOLUME_REPORT  = 5_000_000
+# الحد الأدنى لتغيير الفوليم في 24 ساعة للتقرير
+MIN_VOL_CHANGE_FOR_REPORT = 20.0   # زيادة الفوليم 20% على الأقل في 24h
 
-# ==================== نظام النقاط ====================
-SCORE_RVOL       = 25
-SCORE_SQUEEZE    = 20
-SCORE_BREAKOUT   = 25
-SCORE_ABSORPTION = 15
-SCORE_MOMENTUM   = 15
+# ==================== نظام النقاط الموسع ====================
+SCORE_RVOL         = 20
+SCORE_SQUEEZE      = 20
+SCORE_BREAKOUT     = 15
+SCORE_ABSORPTION   = 10
+SCORE_MOMENTUM     = 10
+SCORE_VOL_SURGE    = 15   # قفزة فوليم مفاجئة
+SCORE_MULTI_FRAME  = 10   # تأكيد على أكثر من فريم
 
 logging.basicConfig(
     level=logging.INFO,
@@ -53,14 +58,12 @@ logger = logging.getLogger(__name__)
 
 previous_report:  list = []
 previous_signals: dict = {}
-seen_coins:       dict = {}   # عملة: timestamp اخر ظهور في التقرير (24 ساعة)
-seen_signals:     dict = {}   # عملة: timestamp اخر اشارة (24 ساعة cooldown)
-trending_cache:   dict = {}   # cache للترندينج
-subscribers:      set  = set()  # كل المشتركين في البوت
+seen_coins:       dict = {}
+seen_signals:     dict = {}
+trending_cache:   dict = {}
 
 # ==================== قوائم الاستبعاد ====================
 EXCLUDED_SYMBOLS = {
-    # العملات الكبيرة
     "BTC","ETH","BNB","XRP","SOL","ADA","DOGE","TRX","AVAX","SHIB",
     "DOT","LINK","MATIC","LTC","BCH","XLM","ETC","UNI","ATOM","NEAR",
     "FIL","ICP","HBAR","VET","ALGO","EGLD","TON","SUI","APT","OP",
@@ -70,12 +73,10 @@ EXCLUDED_SYMBOLS = {
     "ONE","ROSE","ZIL","ICX","QTUM","ZEC","XMR","DASH","DCR","XTZ",
     "EOS","TRB","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
     "ONT","ZEN","SC","DGB","RVN","IOST","STORJ","ANKR","CKB","CELR",
-    # Stablecoins
     "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
     "USDE","PYUSD","GUSD","LUSD","FRAX","SUSD","EURC","USDS",
     "USD1","USDX","CUSD","MUSD","HUSD","USDJ","XUSD","ZUSD",
     "DUSD","NUSD","PUSD","CRVUSD","DOLA","PAX","PAXG","BEAN",
-    # Wrapped tokens
     "WBTC","WETH","STETH","CBETH","RETH","WBNB","WEETH","WSTETH",
     "WMATIC","WAVAX","WSOL","WFTM","WONE","WXDAI","WROSE",
     "BTCB","BTCST","HBTC","RENBTC","SBTC","TBTC",
@@ -105,7 +106,6 @@ MEME_TAGS = {
     "animal-racing","dog","cat","anime","fan-token",
 }
 
-# الأسهم والـ equity tokens
 STOCK_TAGS = {
     "equity-token","tokenized-stock","stock","securities","asset-backed",
     "real-world-assets","rwa","commodities","tokenized-gold",
@@ -117,67 +117,47 @@ STOCK_KEYWORDS = {
     "nvda","meta","nflx","spy","qqq","index","fund","etf",
 }
 
-# معايير حيوية العملة
-MIN_PRICE_CHANGE_7D  = 1.0   # تغيير سعر 7 أيام minimum 1% (بالقيمة المطلقة)
-MIN_PRICE_CHANGE_24H = 0.3   # تغيير سعر 24h minimum 0.3%
-MIN_VOLUME_RATIO     = 0.1   # الفوليم لازم يكون على الأقل 10% من المتوسط
+MIN_PRICE_CHANGE_7D  = 1.0
+MIN_PRICE_CHANGE_24H = 0.3
+MIN_VOLUME_RATIO     = 0.1
 
-# كلمات تدل على wrapped/bridged/synthetic/stablecoin
 EXCLUDED_KEYWORDS_IN_SYMBOL = {
-    # Wrapped
     "wbnb","weth","wbtc","wmatic","wavax","wsol","wftm","wone","wxdai",
-    # Bridged
     "btcb","btcst","hbtc","renbtc","sbtc","tbtc","vbtc","anybtc",
-    # Venus tokens
     "vbnb","veth","vbtc","vusdt","vusdc","vbusd","vdai","vxvs",
-    # Stablecoin variants — اي حاجة فيها usd
     "usd","usdt","usdc","busd","dai","tusd","usdp","usdd","fdusd",
     "usde","pyusd","gusd","lusd","frax","susd","eurc","usds","usdx",
     "cusd","musd","husd","usdj","xusd","zusd","dusd","nusd","pusd",
     "rusd","rlusd","usad","usd1","ust","vai","dola","crvusd","bean",
-    # Gold/commodity pegged
     "xaut","paxg","xagc","dgx","cache","gold","silver",
-    # Synthetic/Liquid staking
     "steth","cbeth","reth","wsteth","weeth","frxeth","sfrxeth",
     "ankrbnb","bnbx","stkbnb","snbnb","beth","abnbb",
 }
 
-# كلمات في السيمبول تستوجب الاستبعاد فورا
 EXCLUDED_SUBSTRINGS = ("usd", "btc", "eth", "bnb", "xau", "xag", "gold", "silver")
 
 
 # ==================== ادوات ====================
 def is_coin_cooldown(symbol: str) -> bool:
-    """هل العملة ظهرت في التقرير في اخر 24 ساعة؟"""
     if symbol not in seen_coins:
         return False
     elapsed = (datetime.now() - seen_coins[symbol]).total_seconds()
     return elapsed < 86400
 
 def mark_coin_seen(symbol: str):
-    """سجل وقت ظهور العملة في التقرير"""
     seen_coins[symbol] = datetime.now()
 
 
 def is_excluded_token(symbol, name, tags):
-    """استبعاد الميم كوين + الـ wrapped/bridged/synthetic/stablecoin"""
     sym = symbol.lower()
     nm  = name.lower()
-
-    # ميم كوين
     if symbol in MEME_SYMBOLS: return True
     if tags and any(t in MEME_TAGS for t in tags): return True
     for kw in MEME_KEYWORDS:
         if kw in sym or kw in nm: return True
-
-    # اي سيمبول فيه usd او btc او eth او xau او gold
     for sub in EXCLUDED_SUBSTRINGS:
         if sub in sym: return True
-
-    # قائمة الكلمات المحددة
     if sym in EXCLUDED_KEYWORDS_IN_SYMBOL: return True
-
-    # اسم العملة يحتوي على كلمات مشبوهة
     excluded_name_keywords = {
         "wrapped","bridged","synthetic","pegged","staked","liquid staking",
         "vault token","receipt token","interest bearing","lp token",
@@ -186,19 +166,15 @@ def is_excluded_token(symbol, name, tags):
     }
     for kw in excluded_name_keywords:
         if kw in nm: return True
-
-    # السيمبول يبدأ بـ v/w/b ويكون نسخة من عملة كبيرة
     excluded_lower = {s.lower() for s in EXCLUDED_SYMBOLS}
     if len(sym) >= 3:
         for prefix in ("v","w","b","r","s","h"):
             if sym.startswith(prefix) and sym[1:] in excluded_lower:
                 return True
-
     return False
 
 
 def is_stock_token(symbol, name, tags):
-    """استبعاد الأسهم والـ equity tokens"""
     if tags and any(t in STOCK_TAGS for t in tags):
         return True
     sym = symbol.lower()
@@ -210,20 +186,13 @@ def is_stock_token(symbol, name, tags):
 
 
 def is_dead_coin(coin_data: dict) -> bool:
-    """استبعاد العملات الميتة أو بدون زخم"""
     pc24 = abs(coin_data.get("price_change_24h", 0) or 0)
     pc7d = abs(coin_data.get("price_change_7d", 0) or 0)
-    vc   = abs(coin_data.get("volume_change", 0) or 0)
     vol  = coin_data.get("volume_24h", 0) or 0
-
-    # لو السعر ماتحركش خالص في 7 أيام
     if pc7d < MIN_PRICE_CHANGE_7D and pc24 < MIN_PRICE_CHANGE_24H:
         return True
-
-    # لو الفوليم ضعيف جداً
     if vol < 100_000:
         return True
-
     return False
 
 
@@ -264,7 +233,6 @@ async def fetch_cmc(session, limit=500):
 
 
 async def fetch_cmc_single(session, symbol):
-    """جلب عملة محددة من CMC - يبحث في اول 2000"""
     url     = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
     headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY, "Accept": "application/json"}
     params  = {"limit": 2000, "convert": "USD", "sort": "market_cap"}
@@ -279,8 +247,6 @@ async def fetch_cmc_single(session, symbol):
 
 
 async def fetch_klines(session, symbol, interval="1h", limit=48):
-    """جلب بيانات الشموع من Gate.io"""
-    # Gate.io intervals: 1m,5m,15m,30m,1h,4h,8h,1d
     url    = "https://api.gateio.ws/api/v4/spot/candlesticks"
     params = {
         "currency_pair": f"{symbol}_USDT",
@@ -292,7 +258,6 @@ async def fetch_klines(session, symbol, interval="1h", limit=48):
                                timeout=aiohttp.ClientTimeout(total=8)) as r:
             if r.status != 200: return []
             data = await r.json()
-        # Gate.io format: [timestamp, volume, close, high, low, open, ...]
         return [{"open":   float(k[5]),
                  "high":   float(k[3]),
                  "low":    float(k[4]),
@@ -362,66 +327,160 @@ def calc_prev_pump(c):
     return max((c[i]["close"]-c[i-1]["close"])/c[i-1]["close"]*100
                for i in range(1,min(20,len(c))))
 
+def calc_vol_surge(c):
+    """هل في قفزة فوليم مفاجئة في الكاندل الأخير مقارنة بمتوسط الـ 10 الأخيرة؟"""
+    if len(c) < 10: return False, 0.0
+    avg_vol = sum(x["volume"] for x in c[-11:-1]) / 10
+    last_vol = c[-1]["volume"]
+    ratio = last_vol / avg_vol if avg_vol > 0 else 0
+    return ratio >= 3.0, ratio  # قفزة أكبر من 3x المتوسط
 
-# ==================== نظام النقاط (شرطين: فوليم عالي + نطاق ضيق) ====================
+def calc_higher_lows(c, periods=6):
+    """تحقق من Higher Lows (أدنى نقاط صاعدة) — مؤشر على الاتجاه الصاعد"""
+    if len(c) < periods: return False
+    lows = [x["low"] for x in c[-periods:]]
+    return all(lows[i] >= lows[i-1] for i in range(1, len(lows)))
+
+def calc_price_above_ma(c, period=20):
+    """السعر فوق المتوسط المتحرك — مؤشر قوي على الزخم"""
+    if len(c) < period: return False
+    ma = sum(x["close"] for x in c[-period:]) / period
+    return c[-1]["close"] > ma
+
+def calc_decreasing_sell_pressure(c):
+    """ضغط البيع ينخفض — الشموع الحمراء بتقل"""
+    if len(c) < 8: return False
+    first_half_red  = sum(1 for x in c[-8:-4] if x["close"] < x["open"])
+    second_half_red = sum(1 for x in c[-4:]   if x["close"] < x["open"])
+    return second_half_red < first_half_red
+
+def calc_candle_size_increase(c):
+    """حجم الشموع الخضرا بيكبر — الزخم الشرائي بيقوى"""
+    if len(c) < 6: return False
+    green = [abs(x["close"]-x["open"]) for x in c[-6:] if x["close"] > x["open"]]
+    if len(green) < 3: return False
+    return green[-1] > green[0] * 1.2
+
+def calc_vwap_cross(c):
+    """السعر اخترق فوق VWAP — إشارة قوة"""
+    if len(c) < 10: return False
+    total_vol = sum(x["volume"] for x in c[-10:])
+    if total_vol == 0: return False
+    vwap = sum(((x["high"]+x["low"]+x["close"])/3) * x["volume"]
+               for x in c[-10:]) / total_vol
+    prev_below = c[-2]["close"] < vwap
+    curr_above = c[-1]["close"] > vwap
+    return prev_below and curr_above
+
+
+# ==================== نظام النقاط الموسع ====================
 def score_coin(candles, cmc):
     sc, rs, dt = 0, [], {}
     vc  = cmc.get("volume_change", 0)
     pc  = cmc.get("price_change_24h", 0)
+    pc1h = cmc.get("price_change_1h", 0)
 
-    # --- الشرط 1: فوليم عالي (50 نقطة) ---
+    # ─── 1. RVOL (20 نقطة) ───────────────────────────────
     rv = calc_rvol(candles) if candles and len(candles) >= 5 else max(1.0, 1+vc/100)
-
     if rv >= 3.0:
-        sc += 50; rs.append(f"RVOL قوي جدا {rv:.1f}x")
+        sc += 20; rs.append(f"RVOL قوي جدا {rv:.1f}x")
     elif rv >= MIN_RVOL:
-        sc += 40; rs.append(f"RVOL {rv:.1f}x")
+        sc += 15; rs.append(f"RVOL {rv:.1f}x")
     elif rv >= 1.5:
-        sc += 20; rs.append(f"RVOL متوسط {rv:.1f}x")
+        sc += 8;  rs.append(f"RVOL متوسط {rv:.1f}x")
     elif vc >= 100:
-        sc += 35; rs.append(f"فوليم +{vc:.0f}%")
+        sc += 15; rs.append(f"فوليم +{vc:.0f}%")
     elif vc >= 50:
-        sc += 20; rs.append(f"فوليم +{vc:.0f}%")
+        sc += 8;  rs.append(f"فوليم +{vc:.0f}%")
 
-    # --- الشرط 2: نطاق ضيق Squeeze (50 نقطة) ---
+    # ─── 2. قفزة فوليم مفاجئة (15 نقطة) ─────────────────
+    surge, surge_ratio = calc_vol_surge(candles) if candles and len(candles) >= 10 else (False, 0)
+    if surge:
+        sc += 15; rs.append(f"قفزة فوليم {surge_ratio:.1f}x")
+    elif surge_ratio >= 2.0:
+        sc += 8;  rs.append(f"زيادة فوليم {surge_ratio:.1f}x")
+
+    # ─── 3. Squeeze + Sideways (20 نقطة) ─────────────────
     if candles and len(candles) >= 20:
         bb   = calc_bb(candles)
         side = calc_sideways(candles)
-
         if bb["squeeze"]:
-            sc += 50; rs.append(f"Squeeze قوي BB {bb['width']:.1f}%")
+            sc += 20; rs.append(f"Squeeze قوي BB {bb['width']:.1f}%")
         elif bb["width"] < 8:
-            sc += 35; rs.append(f"BB ضيق {bb['width']:.1f}%")
+            sc += 14; rs.append(f"BB ضيق {bb['width']:.1f}%")
         elif bb["width"] < 12 and side:
-            sc += 25; rs.append(f"Sideways + BB {bb['width']:.1f}%")
+            sc += 10; rs.append(f"Sideways + BB {bb['width']:.1f}%")
         elif side:
-            sc += 15; rs.append("نطاق Sideways")
+            sc += 6;  rs.append("نطاق Sideways")
         elif bb["width"] < 15:
-            sc += 10; rs.append(f"BB نسبي {bb['width']:.1f}%")
+            sc += 4;  rs.append(f"BB نسبي {bb['width']:.1f}%")
     else:
-        # لو مفيش بيانات كافية، نعتمد على تغيير السعر المنخفض كمؤشر على الضيق
         if abs(pc) < 3:
-            sc += 25; rs.append("حركة سعر هادئة")
+            sc += 10; rs.append("حركة سعر هادئة")
         elif abs(pc) < 6:
-            sc += 10; rs.append("حركة معتدلة")
+            sc += 4;  rs.append("حركة معتدلة")
 
+    # ─── 4. Breakout (15 نقطة) ────────────────────────────
+    brk = calc_breakout(candles) if candles and len(candles) >= 21 else False
+    if brk:
+        sc += 15; rs.append("اختراق للأعلى Breakout")
+
+    # ─── 5. امتصاص البيع (10 نقطة) ───────────────────────
+    abso = calc_absorption(candles) if candles and len(candles) >= 5 else False
+    if abso:
+        sc += 10; rs.append("امتصاص بيع قوي")
+
+    # ─── 6. Higher Lows (8 نقطة) ─────────────────────────
+    hl = calc_higher_lows(candles) if candles and len(candles) >= 6 else False
+    if hl:
+        sc += 8; rs.append("Higher Lows صاعد")
+
+    # ─── 7. السعر فوق MA20 (7 نقطة) ──────────────────────
+    above_ma = calc_price_above_ma(candles) if candles and len(candles) >= 20 else False
+    if above_ma:
+        sc += 7; rs.append("سعر فوق MA20")
+
+    # ─── 8. ضغط البيع ينخفض (5 نقطة) ─────────────────────
+    dec_sell = calc_decreasing_sell_pressure(candles) if candles and len(candles) >= 8 else False
+    if dec_sell:
+        sc += 5; rs.append("ضغط بيع ينخفض")
+
+    # ─── 9. شموع خضرا بتكبر (5 نقطة) ────────────────────
+    growing_candles = calc_candle_size_increase(candles) if candles and len(candles) >= 6 else False
+    if growing_candles:
+        sc += 5; rs.append("شموع شراء تتضخم")
+
+    # ─── 10. اختراق VWAP (5 نقطة) ────────────────────────
+    vwap = calc_vwap_cross(candles) if candles and len(candles) >= 10 else False
+    if vwap:
+        sc += 5; rs.append("اختراق VWAP")
+
+    # ─── تجميع التفاصيل ───────────────────────────────────
     dt = {
-        "rvol": rv,
-        "squeeze": sc >= MIN_SCORE,
-        "vol_trend": vc > 50,
-        "bb_width": calc_bb(candles)["width"] if candles and len(candles)>=20 else 999,
+        "rvol":        rv,
+        "squeeze":     (sc >= MIN_SCORE),
+        "vol_trend":   vc > 50,
+        "vol_surge":   surge,
+        "surge_ratio": surge_ratio,
+        "breakout":    brk,
+        "absorption":  abso,
+        "higher_lows": hl,
+        "above_ma":    above_ma,
+        "dec_sell":    dec_sell,
+        "vwap_cross":  vwap,
+        "bb_width":    calc_bb(candles)["width"] if candles and len(candles)>=20 else 999,
     }
     return {"score": min(sc, 100), "reasons": rs, "details": dt}
 
 
 # ==================== تحويل بيانات CMC ====================
 def parse_coin(coin):
-    q   = coin.get("quote",{}).get("USD",{})
+    q = coin.get("quote",{}).get("USD",{})
     return {
-        "id":     coin.get("id"),
-        "name":   coin.get("name",""),
-        "symbol": coin.get("symbol",""),
-        "price":  float(q.get("price",0) or 0),
+        "id":               coin.get("id"),
+        "name":             coin.get("name",""),
+        "symbol":           coin.get("symbol",""),
+        "price":            float(q.get("price",0) or 0),
         "market_cap":       float(q.get("market_cap",0) or 0),
         "volume_24h":       float(q.get("volume_24h",0) or 0),
         "volume_change":    float(q.get("volume_change_24h",0) or 0),
@@ -435,18 +494,27 @@ def parse_coin(coin):
 
 
 # ============================================================
-# الوظيفة 1: التقرير الدوري — اعلى 30 عملة فوليم كل 4 ساعات
+# ★ الوظيفة 1: التقرير الدوري — أعلى 50 عملة زادت سيولتها
 # ============================================================
 async def send_volume_report(bot: Bot, target_chat: int = None):
+    """
+    التغيير الرئيسي:
+    - بدل ترتيب بأعلى فوليم مطلق
+    - الترتيب بأعلى volume_change_24h% (أكثر عملة زادت سيولتها)
+    - الحد الأدنى: volume_change >= MIN_VOL_CHANGE_FOR_REPORT
+    """
     global previous_report
-    logger.info("التقرير الدوري: جلب اعلى عملات فوليم...")
+    logger.info("التقرير الدوري: جلب أكثر العملات زيادة في السيولة خلال 24 ساعة...")
     scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # المبعت الوحيد هو الأدمن — إلغاء broadcast
+    chat_target = int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
         raw = await fetch_cmc(session, limit=CMC_LIMIT)
 
     if not raw:
-        await broadcast(bot, "فشل جلب البيانات من CMC")
+        await bot.send_message(chat_id=chat_target, text="فشل جلب البيانات من CMC")
         return
 
     coins = []
@@ -458,46 +526,44 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
         if is_meme_coin(symbol, name, tags): continue
         if is_stock_token(symbol, name, tags): continue
         d = parse_coin(c)
-        if d["volume_24h"] < MIN_VOLUME_REPORT: continue
+        # ★ شرط الفوليم الأدنى والتغيير
+        if d["volume_24h"]    < MIN_VOLUME_REPORT:          continue
+        if d["volume_change"] < MIN_VOL_CHANGE_FOR_REPORT:  continue
         if is_dead_coin(d): continue
         coins.append(d)
 
-    # ترتيب حسب الفوليم
-    coins.sort(key=lambda x: x["volume_24h"], reverse=True)
+    # ★ ترتيب بأعلى volume_change% مش أعلى فوليم مطلق
+    coins.sort(key=lambda x: x["volume_change"], reverse=True)
 
-    # فصل العملات: جديدة (لم تظهر في 24h) و قديمة (ظهرت)
+    # فصل: جديدة / قديمة (cooldown 24h)
     fresh = [c for c in coins if not is_coin_cooldown(c["symbol"])]
     old_c = [c for c in coins if is_coin_cooldown(c["symbol"])]
-
-    logger.info(f"فوليم: {len(fresh)} جديدة، {len(old_c)} في cooldown")
+    logger.info(f"فوليم زيادة: {len(fresh)} جديدة، {len(old_c)} في cooldown")
 
     if len(fresh) >= TOP_DISPLAY:
-        # عندنا 50 جديدة او اكثر — خد اول 50 جديدة بس
-        top30 = fresh[:TOP_DISPLAY]
+        top50 = fresh[:TOP_DISPLAY]
     else:
-        # الجديدة اقل من 50 — خد كل الجديدة + كمّل من القديمة
         needed = TOP_DISPLAY - len(fresh)
-        top30  = fresh + old_c[:needed]
-        logger.info(f"اضفنا {needed} من القديمة لاكمال الـ 50")
+        top50  = fresh + old_c[:needed]
+        logger.info(f"أضفنا {needed} من القديمة لإكمال الـ 50")
 
-    # سجل الجديدة بس في الـ cooldown
-    for c in top30:
+    for c in top50:
         if not is_coin_cooldown(c["symbol"]):
             seen_coins[c["symbol"]] = datetime.now()
     save_seen_coins()
-    previous_report = top30
+    previous_report = top50
 
-    # بناء الرسائل (10 في كل رسالة)
+    # بناء الرسائل (10 في كل رسالة) — للأدمن فقط
     chunk_size = 10
-    chunks = [top30[i:i+chunk_size] for i in range(0, len(top30), chunk_size)]
+    chunks = [top50[i:i+chunk_size] for i in range(0, len(top50), chunk_size)]
 
     for idx, chunk in enumerate(chunks, 1):
         lines = []
         if idx == 1:
             lines += [
-                "📊 اعلى 50 Altcoin فوليم — كل المنصات",
+                "📊 أعلى 50 Altcoin ارتفاعاً في السيولة — 24 ساعة",
                 f"⏰ {scan_time}",
-                f"📡 المصدر: CoinMarketCap",
+                f"📡 المصدر: CoinMarketCap | مرتب بأعلى % زيادة فوليم",
                 "━━━━━━━━━━━━━━━━━━━━", ""
             ]
 
@@ -506,36 +572,49 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
             vc  = c["volume_change"]
             p1h = c["price_change_1h"]
             arrow = "🟢" if pc > 0 else "🔴"
+            # أيقونة نسبة الزيادة
+            if vc >= 200:   vol_icon = "🔥🔥🔥"
+            elif vc >= 100: vol_icon = "🔥🔥"
+            elif vc >= 50:  vol_icon = "🔥"
+            else:           vol_icon = "📈"
 
             lines.append(f"{i}. {arrow} {c['symbol']} — {escape_md(c['name'])}")
             lines.append(f"   💵 {fmt_price(c['price'])}  ({pc:+.1f}%)  |  1h: {p1h:+.1f}%")
-            lines.append(f"   💰 فوليم 24h: {fmt_vol(c['volume_24h'])}  ({vc:+.0f}%)")
+            lines.append(f"   💰 فوليم 24h: {fmt_vol(c['volume_24h'])}")
+            lines.append(f"   {vol_icon} زيادة الفوليم: {vc:+.0f}%")
             lines.append(f"   🌐 {c['num_market_pairs']} منصة  |  CMC #{c['rank']}")
             lines.append("")
 
         if idx == len(chunks):
             lines.append("━━━━━━━━━━━━━━━━━━━━")
-            lines.append("💡 للتحليل الكامل: /coin SYMBOL")
-            lines.append("💡 لحجم عملة: /vol SYMBOL")
+            lines.append("💡 /coin SYMBOL — تحليل كامل")
+            lines.append("💡 /vol SYMBOL  — حجم عملة")
 
         try:
-            if target_chat:
-                await bot.send_message(chat_id=target_chat, text="\n".join(lines), disable_web_page_preview=True)
-            else:
-                await broadcast(bot, "\n".join(lines), disable_preview=True)
+            await bot.send_message(
+                chat_id=chat_target,
+                text="\n".join(lines),
+                disable_web_page_preview=True
+            )
             await asyncio.sleep(0.5)
         except Exception as e:
             logger.error(f"خطأ ارسال تقرير: {e}")
 
-    logger.info(f"تم ارسال التقرير: {len(top30)} عملة")
+    logger.info(f"تم إرسال التقرير للأدمن: {len(top50)} عملة")
 
 
 # ============================================================
-# الوظيفة 2: تنبيه الاشارات — يُرسل فقط عند توفر اشارة قوية
+# ★ الوظيفة 2: فحص الإشارات — الإرسال فقط لو النقاط >= 75
 # ============================================================
 async def check_signals(bot: Bot, target_chat: int = None):
+    """
+    التغيير: يبعت للأدمن فقط، لا يبعت إلا لو score >= MIN_SCORE (75)
+    """
     global previous_signals
-    logger.info("فحص الاشارات التقنية...")
+    logger.info("فحص الإشارات التقنية...")
+
+    # المبعت الوحيد هو الأدمن
+    chat_target = target_chat if target_chat else int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
         raw = await fetch_cmc(session, limit=CMC_LIMIT)
@@ -549,24 +628,27 @@ async def check_signals(bot: Bot, target_chat: int = None):
             if symbol in EXCLUDED_SYMBOLS: continue
             if is_meme_coin(symbol, name, tags): continue
             d = parse_coin(c)
-            # فلتر واحد بس: فوليم minimum
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
             candidates.append(d)
 
-        # تحليل تقني
         async def analyze(coin):
             candles = await fetch_klines(session, coin["symbol"])
             res     = score_coin(candles, coin)
             sc      = res["score"]
+            # ★ لا يضيف للقائمة إلا لو النقاط >= 75
             if sc < MIN_SCORE: return None
             rv = res["details"].get("rvol", 1.0)
-            # لو مفيش بيانات Gate.io، نعتمد على CMC فوليم تشينج
             if len(candles) <= 5:
                 vc = coin.get("volume_change", 0)
-                if vc < 50:  # فوليم تشينج اقل من 50% مش مفيد
-                    return None
+                if vc < 50: return None
             else:
                 if rv < MIN_RVOL: return None
+            # ★ فلتر البامب السابق
+            if candles and len(candles) >= 3:
+                prev_pump = calc_prev_pump(candles)
+                if prev_pump > MAX_PREV_PUMP:
+                    logger.info(f"استبعاد {coin['symbol']} — pump سابق {prev_pump:.1f}%")
+                    return None
             coin.update({"score": sc, "reasons": res["reasons"],
                          "details": res["details"], "rvol": rv})
             return coin
@@ -576,7 +658,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
 
     signals = [r for r in results if r and not isinstance(r, Exception)]
 
-    # فلترة: استبعاد العملات اللي اتبعتت في اخر 24 ساعة
+    # cooldown 24 ساعة
     from datetime import timedelta
     fresh_signals = []
     for c in signals:
@@ -584,7 +666,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
         if sym in seen_signals:
             elapsed = datetime.now() - seen_signals[sym]
             if elapsed.total_seconds() < 86400:
-                logger.info(f"تخطي {sym} — اشارة مكررة ({elapsed.seconds//3600}h مضت)")
+                logger.info(f"تخطي {sym} — إشارة مكررة ({elapsed.seconds//3600}h مضت)")
                 continue
         fresh_signals.append(c)
 
@@ -592,7 +674,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
     signals.sort(key=lambda x: x.get("score",0), reverse=True)
 
     if not signals:
-        logger.info("لا توجد اشارات جديدة الان (كل الاشارات مكررة او score < 75)")
+        logger.info("لا توجد إشارات جديدة >= 75 نقطة")
         return
 
     scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -603,7 +685,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
         lines = []
         if idx == 1:
             lines += [
-                f"🚨 تنبيه — {len(signals)} اشارة Pre-Pump",
+                f"🚨 تنبيه — {len(signals)} إشارة Pre-Pump (score >= {MIN_SCORE})",
                 f"⏰ {scan_time}",
                 "━━━━━━━━━━━━━━━━━━━━", ""
             ]
@@ -618,25 +700,27 @@ async def check_signals(bot: Bot, target_chat: int = None):
             dt    = c.get("details",{})
             arrow = "🟢" if pc > 0 else "🔴"
 
-            if sc >= 90:   strength = "🔥🔥🔥 قوية جدا"
+            if sc >= 90:   strength = "🔥🔥🔥 قوية جداً"
             elif sc >= 80: strength = "🔥🔥 قوية"
-            else:          strength = "🔥 جيدة"
+            else:          strength = "🔥 جيدة (75+)"
 
             extras = []
-            if dt.get("squeeze"):              extras.append("Squeeze")
-            if dt.get("breakout"):             extras.append("Breakout")
-            if dt.get("absorption"):           extras.append("امتصاص بيع")
-            if dt.get("vol_trend"):            extras.append("فوليم متصاعد")
-            if dt.get("green",0) >= 3:         extras.append("3 شموع خضر")
-            if dt.get("atr_dir") == "rising":  extras.append("ATR ارتفاع")
+            if dt.get("vol_surge"):                    extras.append(f"قفزة فوليم {dt.get('surge_ratio',0):.1f}x")
+            if dt.get("breakout"):                     extras.append("Breakout")
+            if dt.get("absorption"):                   extras.append("امتصاص بيع")
+            if dt.get("higher_lows"):                  extras.append("Higher Lows")
+            if dt.get("above_ma"):                     extras.append("فوق MA20")
+            if dt.get("dec_sell"):                     extras.append("بيع ينخفض")
+            if dt.get("vwap_cross"):                   extras.append("اختراق VWAP")
+            if dt.get("vol_trend"):                    extras.append("فوليم متصاعد")
 
             lines.append(f"{arrow} {c['symbol']} — {escape_md(c['name'])}")
             lines.append(f"   💵 {fmt_price(c['price'])}  ({pc:+.1f}%)  |  1h: {p1h:+.1f}%")
             lines.append(f"   🎯 {sc}/100  —  {strength}")
             lines.append(f"   📊 RVOL: {rv:.1f}x  |  فوليم: {fmt_vol(c['volume_24h'])} ({vc:+.0f}%)")
             lines.append(f"   🌐 {c['num_market_pairs']} منصة  |  7d: {c['price_change_7d']:+.1f}%")
-            if rs:      lines.append(f"   ✅ {' | '.join(rs[:3])}")
-            if extras:  lines.append(f"   📌 {' · '.join(extras)}")
+            if rs:      lines.append(f"   ✅ {' | '.join(rs[:4])}")
+            if extras:  lines.append(f"   📌 {' · '.join(extras[:5])}")
             lines.append(f"   🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{c['symbol']}_USDT")
             lines.append("")
 
@@ -645,23 +729,23 @@ async def check_signals(bot: Bot, target_chat: int = None):
             lines.append("📡 CMC + Gate.io")
 
         try:
-            if target_chat:
-                await bot.send_message(chat_id=target_chat, text="\n".join(lines), disable_web_page_preview=True)
-            else:
-                await broadcast(bot, "\n".join(lines), disable_preview=True)
+            await bot.send_message(
+                chat_id=chat_target,
+                text="\n".join(lines),
+                disable_web_page_preview=True
+            )
             await asyncio.sleep(0.5)
         except Exception as e:
-            logger.error(f"خطأ ارسال اشارة: {e}")
+            logger.error(f"خطأ ارسال إشارة: {e}")
 
-    # سجل العملات اللي اتبعتت
     for c in signals:
         seen_signals[c["symbol"]] = datetime.now()
     previous_signals = {c["symbol"]: c for c in signals}
-    logger.info(f"تم ارسال {len(signals)} اشارة")
+    logger.info(f"تم إرسال {len(signals)} إشارة للأدمن")
 
 
 # ============================================================
-# نظام المشتركين
+# نظام المشتركين (مبسط — الأدمن فقط)
 # ============================================================
 import json, os
 
@@ -687,140 +771,17 @@ def save_seen_coins():
         logger.error(f"خطأ حفظ seen_coins: {e}")
 
 
-def load_subscribers():
-    global subscribers
-    # الادمن دايما مشترك
-    subscribers.add(int(ADMIN_CHAT_ID))
-    try:
-        if os.path.exists(SUBS_FILE):
-            with open(SUBS_FILE, "r") as f:
-                data = json.load(f)
-            subscribers.update(set(data))
-            logger.info(f"تم تحميل {len(subscribers)} مشترك")
-    except Exception as e:
-        logger.error(f"خطأ تحميل المشتركين: {e}")
-
-def save_subscribers():
-    try:
-        with open(SUBS_FILE, "w") as f:
-            json.dump(list(subscribers), f)
-    except Exception as e:
-        logger.error(f"خطأ حفظ المشتركين: {e}")
-
-async def broadcast(bot: Bot, text: str, disable_preview: bool = False):
-    """ارسال رسالة لكل المشتركين"""
-    if not subscribers:
-        return
-    failed = []
-    for chat_id in list(subscribers):
-        try:
-            await bot.send_message(
-                chat_id=chat_id,
-                text=text,
-                disable_web_page_preview=disable_preview
-            )
-            await asyncio.sleep(0.05)  # تجنب flood
-        except Exception as e:
-            err = str(e).lower()
-            if "blocked" in err or "not found" in err or "deactivated" in err:
-                failed.append(chat_id)
-                logger.info(f"حذف مشترك غير نشط: {chat_id}")
-            else:
-                logger.error(f"خطأ ارسال لـ {chat_id}: {e}")
-    # حذف المشتركين الغير نشطين
-    for chat_id in failed:
-        subscribers.discard(chat_id)
-    if failed:
-        save_subscribers()
-
-
 # ============================================================
-# ميزة الترندينج — العملات الاكثر بحثاً
-# ============================================================
-async def fetch_trending() -> list:
-    """جلب العملات الاكثر بحثا من CoinGecko"""
-    try:
-        async with aiohttp.ClientSession() as session:
-            url = "https://api.coingecko.com/api/v3/search/trending"
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as r:
-                data = await r.json()
-        coins = data.get("coins", [])
-        result = []
-        for item in coins:
-            c = item.get("item", {})
-            symbol = c.get("symbol", "").upper()
-            name   = c.get("name", "")
-            tags   = []
-            # استبعاد الكبار والميم
-            if symbol in EXCLUDED_SYMBOLS: continue
-            if is_meme_coin(symbol, name, tags): continue
-            for kw in EXCLUDED_SYMBOL_CONTAINS:
-                if kw in symbol.lower(): continue
-            result.append({
-                "symbol":   symbol,
-                "name":     name,
-                "rank":     c.get("market_cap_rank", 999),
-                "score":    c.get("score", 0),
-                "price_btc": c.get("price_btc", 0),
-                "thumb":    c.get("thumb", ""),
-            })
-        return result
-    except Exception as e:
-        logger.error(f"Trending error: {e}")
-        return []
-
-
-async def send_trending_alert(bot: Bot, target_chat: int = None):
-    """ارسال تنبيه العملات الاكثر بحثا"""
-    logger.info("جلب الترندينج...")
-    trending = await fetch_trending()
-    if not trending:
-        return
-
-    scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    lines = [
-        "🔥 العملات الاكثر بحثا الان",
-        f"⏰ {scan_time}",
-        f"📡 المصدر: CoinGecko Trending",
-        "━━━━━━━━━━━━━━━━━━━━", ""
-    ]
-
-    for i, c in enumerate(trending[:10], 1):
-        rank_str = f"CMC #{c['rank']}" if c['rank'] and c['rank'] < 9999 else "غير مرتب"
-        lines.append(f"{i}. 🔍 {c['symbol']} — {escape_md(c['name'])}")
-        lines.append(f"   📊 {rank_str}")
-        lines.append("")
-
-    lines.append("━━━━━━━━━━━━━━━━━━━━")
-    lines.append("💡 تحقق من اي عملة: /coin SYMBOL")
-
-    try:
-        if target_chat:
-            await bot.send_message(chat_id=target_chat, text="\n".join(lines))
-        else:
-            await broadcast(bot, "\n".join(lines))
-        logger.info(f"تم ارسال الترندينج: {len(trending)} عملة")
-    except Exception as e:
-        logger.error(f"خطأ ارسال ترندينج: {e}")
-
-
-async def job_trending(context: ContextTypes.DEFAULT_TYPE):
-    await send_trending_alert(context.bot)
-
-
-# ============================================================
-# ميزة /info — التوكنوميكس الكاملة
+# ميزة /info — التوكنوميكس
 # ============================================================
 async def get_token_info(symbol: str) -> str:
     symbol = symbol.upper().strip()
     results = {}
 
     async with aiohttp.ClientSession() as session:
-
-        # --- CMC: بيانات اساسية + supply ---
         cmc_coin = await fetch_cmc_single(session, symbol)
         if cmc_coin:
-            q            = cmc_coin.get("quote",{}).get("USD",{})
+            q = cmc_coin.get("quote",{}).get("USD",{})
             results["price"]         = float(q.get("price",0) or 0)
             results["pc24"]          = float(q.get("percent_change_24h",0) or 0)
             results["volume_24h"]    = float(q.get("volume_24h",0) or 0)
@@ -835,7 +796,6 @@ async def get_token_info(symbol: str) -> str:
             results["tags"]          = cmc_coin.get("tags",[])
             results["cmc_id"]        = cmc_coin.get("id","")
 
-        # --- CoinGecko: holders + unlock info ---
         try:
             cg_url = f"https://api.coingecko.com/api/v3/search?query={symbol}"
             async with session.get(cg_url, timeout=aiohttp.ClientTimeout(total=10)) as r:
@@ -843,20 +803,14 @@ async def get_token_info(symbol: str) -> str:
             coins_list = cg_data.get("coins",[])
             cg_id = next((c["id"] for c in coins_list
                           if c.get("symbol","").upper() == symbol), None)
-
             if cg_id:
                 results["cg_id"] = cg_id
-                # جلب تفاصيل العملة
                 detail_url = f"https://api.coingecko.com/api/v3/coins/{cg_id}?localization=false&tickers=false&market_data=true&community_data=true&developer_data=false"
                 async with session.get(detail_url, timeout=aiohttp.ClientTimeout(total=12)) as r:
                     detail = await r.json()
-
-                # عدد الحاملين من community data
                 community = detail.get("community_data",{})
-                results["twitter_followers"] = community.get("twitter_followers",0) or 0
+                results["twitter_followers"]  = community.get("twitter_followers",0) or 0
                 results["reddit_subscribers"] = community.get("reddit_subscribers",0) or 0
-
-                # بيانات السوق من CoinGecko
                 md = detail.get("market_data",{})
                 if not results.get("circulating"):
                     results["circulating"]  = float(md.get("circulating_supply",0) or 0)
@@ -864,68 +818,15 @@ async def get_token_info(symbol: str) -> str:
                     results["total_supply"] = float(md.get("total_supply",0) or 0)
                 if not results.get("max_supply"):
                     results["max_supply"]   = md.get("max_supply")
-
-                # نسبة التداول
                 if results.get("total_supply",0) > 0 and results.get("circulating",0) > 0:
                     results["circ_pct"] = results["circulating"] / results["total_supply"] * 100
                 else:
                     results["circ_pct"] = None
-
-                # Links
                 links = detail.get("links",{})
                 results["website"]  = (links.get("homepage",[None])[0] or "").strip("/")
-                results["explorer"] = (links.get("blockchain_site",[None])[0] or "").strip("/")
-
         except Exception as e:
             logger.debug(f"CoinGecko error: {e}")
 
-        # --- Token Unlock: من TokenUnlocks API (مجاني) ---
-        try:
-            unlock_url = f"https://token-unlocks.app/api/project?symbol={symbol.lower()}"
-            async with session.get(unlock_url, timeout=aiohttp.ClientTimeout(total=8)) as r:
-                if r.status == 200:
-                    unlock_data = await r.json()
-                    unlocks = unlock_data.get("upcomingUnlocks",[]) if isinstance(unlock_data,dict) else []
-                    if unlocks:
-                        next_unlock = unlocks[0]
-                        results["next_unlock_date"]   = next_unlock.get("date","")[:10]
-                        results["next_unlock_amount"] = float(next_unlock.get("amount",0) or 0)
-                        results["next_unlock_pct"]    = float(next_unlock.get("percentage",0) or 0)
-        except:
-            pass
-
-        # --- Etherscan/BSCScan: عدد الحاملين (لو ERC20/BEP20) ---
-        # نحاول نجيب contract address من CoinGecko
-        try:
-            if results.get("cg_id"):
-                contract_url = f"https://api.coingecko.com/api/v3/coins/{results['cg_id']}"
-                async with session.get(contract_url, timeout=aiohttp.ClientTimeout(total=10)) as r:
-                    cdata = await r.json()
-                platforms = cdata.get("platforms",{})
-                eth_contract = platforms.get("ethereum","")
-                bsc_contract = platforms.get("binance-smart-chain","")
-
-                if eth_contract:
-                    eth_url = f"https://api.etherscan.io/api?module=token&action=tokeninfo&contractaddress={eth_contract}&apikey=YourApiKeyToken"
-                    async with session.get(eth_url, timeout=aiohttp.ClientTimeout(total=8)) as r:
-                        eth_data = await r.json()
-                    if eth_data.get("status") == "1":
-                        token_info = eth_data.get("result",[{}])
-                        if token_info:
-                            results["holders"] = int(token_info[0].get("holdersCount",0) or 0)
-
-                elif bsc_contract:
-                    bsc_url = f"https://api.bscscan.com/api?module=token&action=tokeninfo&contractaddress={bsc_contract}&apikey=YourApiKeyToken"
-                    async with session.get(bsc_url, timeout=aiohttp.ClientTimeout(total=8)) as r:
-                        bsc_data = await r.json()
-                    if bsc_data.get("status") == "1":
-                        token_info = bsc_data.get("result",[{}])
-                        if token_info:
-                            results["holders"] = int(token_info[0].get("holdersCount",0) or 0)
-        except:
-            pass
-
-    # ==================== بناء الرسالة ====================
     if not results.get("name"):
         return f"العملة {symbol} مش موجودة في CMC"
 
@@ -949,34 +850,11 @@ async def get_token_info(symbol: str) -> str:
         f"   Total Supply: {fmt_supply(results.get('total_supply',0))}",
         f"   Max Supply: {fmt_supply(results.get('max_supply',0)) if results.get('max_supply') else 'غير محدود'}",
     ]
-
-    # نسبة التداول
     if results.get("circ_pct"):
         pct = results["circ_pct"]
         bar_filled = int(pct / 10)
         bar = "█" * bar_filled + "░" * (10 - bar_filled)
         lines.append(f"   نسبة المتداول: {pct:.1f}% [{bar}]")
-
-    # عدد الحاملين
-    if results.get("holders",0) > 0:
-        lines.append(f"   عدد الحاملين: {results['holders']:,}")
-    else:
-        lines.append(f"   عدد الحاملين: غير متاح")
-
-    # موعد فك العملات
-    lines.append(f"")
-    lines.append(f"🔓 فك العملات (Unlock):")
-    if results.get("next_unlock_date"):
-        lines.append(f"   الموعد القادم: {results['next_unlock_date']}")
-        if results.get("next_unlock_amount",0) > 0:
-            lines.append(f"   الكمية: {fmt_supply(results['next_unlock_amount'])}")
-        if results.get("next_unlock_pct",0) > 0:
-            lines.append(f"   نسبة من التوتال: {results['next_unlock_pct']:.2f}%")
-    else:
-        lines.append(f"   لا يوجد بيانات unlock متاحة")
-        lines.append(f"   تحقق يدوياً: https://token.unlocks.app/{symbol.lower()}")
-
-    # Community
     if results.get("twitter_followers",0) > 0 or results.get("reddit_subscribers",0) > 0:
         lines.append(f"")
         lines.append(f"👥 المجتمع:")
@@ -984,12 +862,9 @@ async def get_token_info(symbol: str) -> str:
             lines.append(f"   Twitter: {results['twitter_followers']:,}")
         if results.get("reddit_subscribers",0) > 0:
             lines.append(f"   Reddit: {results['reddit_subscribers']:,}")
-
-    # تاريخ الاضافة
     if results.get("date_added"):
         lines.append(f"")
-        lines.append(f"📅 تاريخ الاضافة على CMC: {results['date_added']}")
-
+        lines.append(f"📅 تاريخ الإضافة على CMC: {results['date_added']}")
     lines += [
         f"━━━━━━━━━━━━━━━━━━━━",
         f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
@@ -999,17 +874,14 @@ async def get_token_info(symbol: str) -> str:
 
 
 # ============================================================
-# الوظيفة 3: /vol — حجم اي عملة بدون قيود
+# /vol — حجم أي عملة
 # ============================================================
 async def get_vol(symbol: str) -> str:
     symbol = symbol.upper().strip()
     async with aiohttp.ClientSession() as session:
-        # ابحث اول في CMC بشكل مباشر
         coin = await fetch_cmc_single(session, symbol)
-
         if not coin:
             return f"العملة {symbol} مش موجودة في CMC"
-
         q     = coin.get("quote",{}).get("USD",{})
         vol   = float(q.get("volume_24h",0) or 0)
         vc    = float(q.get("volume_change_24h",0) or 0)
@@ -1022,17 +894,14 @@ async def get_vol(symbol: str) -> str:
         rank  = coin.get("cmc_rank",999)
         name  = coin.get("name","")
         arrow = "🟢" if pc24 > 0 else "🔴"
-
         return (
             f"📊 {symbol} — {escape_md(name)}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{arrow} السعر: {fmt_price(price)}  ({pc24:+.2f}%)\n"
-            f"⏱ 1h: {pc1h:+.2f}%  |  7d: {pc7d:+.2f}%\n"
-            f"\n"
+            f"⏱ 1h: {pc1h:+.2f}%  |  7d: {pc7d:+.2f}%\n\n"
             f"💰 حجم التداول 24h الكلي (كل المنصات):\n"
             f"   {fmt_vol(vol)}\n"
-            f"   تغيير الحجم: {vc:+.1f}%\n"
-            f"\n"
+            f"   زيادة الفوليم: {vc:+.1f}%\n\n"
             f"🌐 عدد المنصات: {pairs}\n"
             f"💎 Market Cap: {fmt_vol(mc)}\n"
             f"📊 رانك CMC: #{rank}\n"
@@ -1043,7 +912,7 @@ async def get_vol(symbol: str) -> str:
 
 
 # ============================================================
-# الوظيفة الكاملة: /coin — تحليل شامل
+# /coin — تحليل شامل
 # ============================================================
 async def get_coin_analysis(symbol: str) -> str:
     symbol = symbol.upper().strip()
@@ -1051,7 +920,6 @@ async def get_coin_analysis(symbol: str) -> str:
         coin = await fetch_cmc_single(session, symbol)
         if not coin:
             return f"العملة {symbol} مش موجودة في CMC"
-
         d       = parse_coin(coin)
         candles = await fetch_klines(session, symbol, limit=48)
         rv      = calc_rvol(candles) if candles else 1.0
@@ -1061,6 +929,9 @@ async def get_coin_analysis(symbol: str) -> str:
         side    = calc_sideways(candles) if candles else False
         abso    = calc_absorption(candles) if candles else False
         vt      = calc_vol_trend(candles) if candles else False
+        hl      = calc_higher_lows(candles) if candles else False
+        above_ma= calc_price_above_ma(candles) if candles else False
+        surge, surge_ratio = calc_vol_surge(candles) if candles else (False, 0)
 
         arrow = "🟢" if d["price_change_24h"] > 0 else "🔴"
         lines = [
@@ -1069,30 +940,29 @@ async def get_coin_analysis(symbol: str) -> str:
             f"{arrow} السعر: {fmt_price(d['price'])}  ({d['price_change_24h']:+.2f}%)",
             f"⏱ 1h: {d['price_change_1h']:+.2f}%  |  7d: {d['price_change_7d']:+.2f}%",
             f"",
-            f"💰 حجم التداول 24h الكلي (كل المنصات):",
-            f"   {fmt_vol(d['volume_24h'])}  (تغيير: {d['volume_change']:+.0f}%)",
-            f"🌐 عدد المنصات: {d['num_market_pairs']}  |  Market Cap: {fmt_vol(d['market_cap'])}",
+            f"💰 حجم التداول 24h: {fmt_vol(d['volume_24h'])}  ({d['volume_change']:+.0f}%)",
+            f"🌐 المنصات: {d['num_market_pairs']}  |  Market Cap: {fmt_vol(d['market_cap'])}",
             f"📊 رانك CMC: #{d['rank']}",
             f"",
             f"📈 التحليل التقني:",
             f"   RVOL: {rv:.2f}x  {'✅' if rv>=MIN_RVOL else '⚠️'}",
+            f"   قفزة فوليم: {'✅ ' + str(round(surge_ratio,1)) + 'x' if surge else '❌'}",
             f"   ATR: {'↗️ ارتفاع' if atrd=='rising' else '↘️ هبوط' if atrd=='falling' else '➡️ ثابت'}",
             f"   Bollinger: {bb['width']:.1f}%  {'🔴 Squeeze!' if bb['squeeze'] else ''}",
             f"   Breakout: {'✅' if brk else '❌'}  |  Sideways: {'✅' if side else '❌'}",
+            f"   Higher Lows: {'✅' if hl else '❌'}  |  فوق MA20: {'✅' if above_ma else '❌'}",
             f"   امتصاص بيع: {'✅' if abso else '❌'}  |  فوليم متصاعد: {'✅' if vt else '❌'}",
         ]
-
         if candles and len(candles) >= 10:
-            res   = score_coin(candles, d)
-            sc    = res["score"]
-            rs    = res["reasons"]
+            res = score_coin(candles, d)
+            sc  = res["score"]
+            rs  = res["reasons"]
             lines += [
                 f"",
-                f"🎯 نقاط الاشارة: {sc}/100",
-                f"   {'🚀 اشارة قوية!' if sc>=MIN_SCORE else '😴 لا اشارة بعد'}",
+                f"🎯 نقاط الإشارة: {sc}/100",
+                f"   {'🚀 إشارة قوية! (>= 75)' if sc>=MIN_SCORE else '😴 لا إشارة بعد (< 75)'}",
             ]
-            if rs: lines.append(f"   {' | '.join(rs[:4])}")
-
+            if rs: lines.append(f"   {' | '.join(rs[:5])}")
         lines += [
             f"",
             f"🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{symbol}_USDT",
@@ -1116,40 +986,30 @@ async def job_check_signals(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"خطأ في job_check_signals: {e}")
 
 
-# ==================== اوامر البوت ====================
+# ==================== أوامر البوت ====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🚀 Altcoin Smart Scanner Bot\n\n"
         "التقارير التلقائية:\n"
-        "📊 كل 4 ساعات: اعلى 30 عملة فوليم\n"
-        "🚨 فوري: تنبيه عند توفر اشارة قوية\n\n"
-        "الاوامر:\n"
-        "/report  — تقرير فوري لاعلى 30 فوليم\n"
-        "/scan    — فحص الاشارات التقنية الان\n"
-        "/info ETH — توكنوميكس + unlock + holders\n"
-        "/vol ETH — حجم تداول اي عملة\n"
+        "📊 كل 4 ساعات: أعلى 50 عملة زادت سيولتها (مرتب بأعلى % زيادة)\n"
+        "🚨 فوري: تنبيه عند توفر إشارة قوية >= 75 نقطة\n\n"
+        "الأوامر:\n"
+        "/report  — تقرير فوري لأعلى 50 زيادة سيولة\n"
+        "/scan    — فحص الإشارات التقنية الآن\n"
+        "/info ETH — توكنوميكس + holders\n"
+        "/vol ETH — حجم تداول أي عملة\n"
         "/coin ETH — تحليل كامل لعملة\n"
-        "/top     — افضل 5 اشارات\n"
+        "/top     — أفضل 5 إشارات\n"
         "/status  — حالة البوت\n"
         "/chatid  — معرفة الـ Chat ID"
     )
 
-async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id in subscribers:
-        subscribers.discard(chat_id)
-        save_subscribers()
-        await update.message.reply_text("✅ تم الغاء اشتراكك. اكتب /start للاشتراك مجددا.")
-    else:
-        await update.message.reply_text("انت غير مشترك اصلا. اكتب /start للاشتراك.")
-
-
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📊 جاري جلب اعلى 30 عملة فوليم...")
-    await send_volume_report(context.bot)
+    await update.message.reply_text("📊 جاري جلب أعلى 50 عملة زيادة سيولة...")
+    await send_volume_report(context.bot, target_chat=update.effective_chat.id)
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 جاري فحص الاشارات التقنية...")
+    await update.message.reply_text("🔍 جاري فحص الإشارات التقنية (score >= 75)...")
     await check_signals(context.bot, target_chat=update.effective_chat.id)
 
 async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1160,20 +1020,14 @@ async def cmd_vol(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await get_vol(context.args[0])
     await update.message.reply_text(result)
 
-async def cmd_trending(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 جاري جلب العملات الاكثر بحثا...")
-    await send_trending_alert(context.bot, target_chat=update.effective_chat.id)
-
-
 async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("استخدم: /info اسم_العملة\nمثال: /info ETH")
         return
     symbol = context.args[0].upper()
-    await update.message.reply_text(f"🔍 جاري جلب توكنوميكس {symbol}... (ثواني)")
+    await update.message.reply_text(f"🔍 جاري جلب توكنوميكس {symbol}...")
     result = await get_token_info(symbol)
     await update.message.reply_text(result, disable_web_page_preview=True)
-
 
 async def cmd_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -1185,37 +1039,21 @@ async def cmd_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not previous_signals:
-        await update.message.reply_text("لا توجد اشارات بعد، استخدم /scan")
+        await update.message.reply_text("لا توجد إشارات بعد، استخدم /scan")
         return
     top5  = sorted(previous_signals.values(), key=lambda x: x.get("score",0), reverse=True)[:5]
-    lines = ["🏆 افضل 5 اشارات:\n"]
+    lines = ["🏆 أفضل 5 إشارات:\n"]
     for i, c in enumerate(top5, 1):
         lines.append(f"{i}. {c['symbol']}  نقاط: {c.get('score',0)}/100  ({c['price_change_24h']:+.1f}%)")
     await update.message.reply_text("\n".join(lines))
 
-async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """امر للادمن فقط"""
-    chat_id = update.effective_chat.id
-    if str(chat_id) != str(ADMIN_CHAT_ID):
-        await update.message.reply_text("هذا الامر للادمن فقط.")
-        return
-    await update.message.reply_text(
-        f"📊 احصائيات البوت:\n"
-        f"👥 المشتركين: {len(subscribers)}\n"
-        f"🚨 اشارات نشطة: {len(previous_signals)}\n"
-        f"📋 اخر تقرير: {len(previous_report)} عملة\n"
-        f"⏱ الفحص: كل 30 دقيقة"
-    )
-
-
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ البوت شغال\n"
-        f"👥 المشتركين: {len(subscribers)}\n"
-        f"📊 تقرير كل {SCAN_INTERVAL_MINUTES} دقيقة\n"
-        f"🔍 فحص اشارات كل 30 دقيقة\n"
-        f"🔥 ترندينج كل 6 ساعات\n"
-        f"📡 CMC + Gate.io"
+        f"📊 تقرير كل {SCAN_INTERVAL_MINUTES} دقيقة (أعلى % زيادة سيولة)\n"
+        f"🔍 فحص إشارات كل 30 دقيقة (score >= {MIN_SCORE})\n"
+        f"📡 CMC + Gate.io\n"
+        f"🔔 الإرسال: الأدمن فقط"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1224,45 +1062,34 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ==================== تشغيل البوت ====================
 def main():
-    if "ضع_" in TELEGRAM_TOKEN:
-        print("❌ حط التوكن في TELEGRAM_TOKEN"); return
-    if "ضع_" in CMC_API_KEY:
-        print("❌ حط CMC API Key في CMC_API_KEY"); return
-
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start",  cmd_start))
-    app.add_handler(CommandHandler("report", cmd_report))
-    app.add_handler(CommandHandler("scan",   cmd_scan))
-    app.add_handler(CommandHandler("vol",    cmd_vol))
-    app.add_handler(CommandHandler("stop",    cmd_stop))
-    app.add_handler(CommandHandler("stats",   cmd_stats))
-    app.add_handler(CommandHandler("trending", cmd_trending))
-    app.add_handler(CommandHandler("info",   cmd_info))
-    app.add_handler(CommandHandler("coin",   cmd_coin))
-    app.add_handler(CommandHandler("top",    cmd_top))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("chatid", cmd_chatid))
+    app.add_handler(CommandHandler("start",   cmd_start))
+    app.add_handler(CommandHandler("report",  cmd_report))
+    app.add_handler(CommandHandler("scan",    cmd_scan))
+    app.add_handler(CommandHandler("vol",     cmd_vol))
+    app.add_handler(CommandHandler("info",    cmd_info))
+    app.add_handler(CommandHandler("coin",    cmd_coin))
+    app.add_handler(CommandHandler("top",     cmd_top))
+    app.add_handler(CommandHandler("status",  cmd_status))
+    app.add_handler(CommandHandler("chatid",  cmd_chatid))
 
-    load_subscribers()
     load_seen_coins()
 
-    # التقرير الدوري كل 4 ساعات — اول تقرير بعد 30 ثانية
+    # التقرير كل 4 ساعات — أول تقرير بعد 30 ثانية
     app.job_queue.run_repeating(job_volume_report,
                                 interval=SCAN_INTERVAL_MINUTES*60, first=30)
-    # فحص الاشارات كل 30 دقيقة — اول فحص بعد دقيقتين
+    # فحص الإشارات كل 30 دقيقة — أول فحص بعد دقيقتين
     app.job_queue.run_repeating(job_check_signals,
                                 interval=1800, first=120)
-    # تنبيه الترندينج كل 6 ساعات — اول تنبيه بعد 3 دقائق
-    app.job_queue.run_repeating(job_trending,
-                                interval=21600, first=180)
+
     print("="*55)
-    print("🚀 Altcoin Smart Scanner Bot")
-    print(f"📊 تقرير فوليم كل {SCAN_INTERVAL_MINUTES} دقيقة (50 عملة - بدون تكرار 24h)")
-    print("🚨 فحص اشارات كل ساعة")
-    print("🔥 ترندينج كل 6 ساعات")
+    print("🚀 Altcoin Smart Scanner Bot v2")
+    print(f"📊 تقرير أعلى % زيادة سيولة كل {SCAN_INTERVAL_MINUTES} دقيقة")
+    print(f"🚨 إشارات كل 30 دقيقة (score >= {MIN_SCORE} فقط)")
+    print("🔔 الإرسال: الأدمن فقط — لا broadcast")
     print("📡 CMC + Gate.io")
     print("="*55)
 
