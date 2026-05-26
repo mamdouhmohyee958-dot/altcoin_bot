@@ -38,6 +38,11 @@ MIN_VOL_FOR_SIGNAL = 2_000_000
 MAX_MARKET_CAP            = 2_000_000_000
 MIN_VOLUME_REPORT         = 5_000_000
 MIN_VOL_CHANGE_FOR_REPORT = 20.0
+# ✅ جديد v3.1: سكان البامب المستمر
+SIGNAL_LOOP_GAP_SECONDS = 90      # فاصل بين دورات السكان المستمر
+SIGNAL_LOOP_ERR_GAP     = 30      # فاصل بعد خطأ
+# ✅ جديد v3.1: فلتر تقرير الفوليوم
+MIN_FLOW_SCORE_FOR_REPORT = 70.0  # يبعث القوي والقوي جداً فقط (>=70%)
 
 # ==================== ✅ نظام النقاط المتطور (مجموع = 130 → mapped to 100) ====================
 SCORE_RVOL              = 15
@@ -857,6 +862,26 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
                 return await _fetch_flow(c)
         await asyncio.gather(*[_with_sem(c) for c in top50], return_exceptions=True)
 
+    # ✅ جديد v3.1: استبعاد العملات ذات قوة السير الضعيف/الضعيف جداً
+    # نُبقي فقط: قوي (≥70) و قوي جداً (≥90)، ونستبعد ما دون 70 وما هو غير متاح
+    before_filter = len(top50)
+    top50 = [c for c in top50 if c.get("flow") and c["flow"].get("score", 0) >= MIN_FLOW_SCORE_FOR_REPORT]
+    # إعادة ترتيب: حسب قوة السير أولاً، ثم زيادة الفوليوم
+    top50.sort(key=lambda x: (x["flow"]["score"], x["volume_change"]), reverse=True)
+    logger.info(f"فلتر قوة السير: {before_filter} → {len(top50)} عملة (≥{MIN_FLOW_SCORE_FOR_REPORT}%)")
+
+    if not top50:
+        try:
+            await bot.send_message(
+                chat_id=chat_target,
+                text=f"📊 لا توجد عملات بقوة سير ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% حالياً\n⏰ {scan_time}",
+                disable_web_page_preview=True
+            )
+        except Exception as e:
+            logger.error(f"خطأ ارسال تقرير فارغ: {e}")
+        logger.info("لا توجد عملات قوية بعد الفلتر")
+        return
+
     chunk_size = 10
     chunks = [top50[i:i+chunk_size] for i in range(0, len(top50), chunk_size)]
 
@@ -864,9 +889,10 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
         lines = []
         if idx == 1:
             lines += [
-                "📊 أعلى 50 Altcoin ارتفاعاً في السيولة — 24 ساعة",
+                f"📊 أعلى Altcoin بقوة سير ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% — 24 ساعة",
                 f"⏰ {scan_time}",
-                f"📡 المصدر: CoinMarketCap | مرتب بأعلى % زيادة فوليم",
+                f"📡 المصدر: CMC + Gate.io | مرتب بقوة السير ثم زيادة الفوليم",
+                f"✅ {len(top50)} عملة قوية / قوية جداً",
                 "━━━━━━━━━━━━━━━━━━━━", ""
             ]
 
@@ -1364,6 +1390,7 @@ async def job_volume_report(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"خطأ في job_volume_report: {e}")
 
 async def job_check_signals(context: ContextTypes.DEFAULT_TYPE):
+    # هذه الدالة تركت للتوافق مع /scan فقط — السكان الفعلي الآن مستمر
     if job_locks["check_signals"].locked():
         logger.warning("⚠️ job_check_signals قيد التشغيل بالفعل - تخطي")
         return
@@ -1379,19 +1406,55 @@ async def job_check_signals(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"خطأ في job_check_signals: {e}")
 
 
+# ✅ جديد v3.1: سكان البامب المستمر — يدور بلا توقف، يبعت لو لقى ويسكت لو ملقاش
+async def continuous_signal_scanner(bot: Bot):
+    """
+    حلقة لا نهائية لفحص الإشارات. تشتغل في الخلفية طول عمل البوت.
+    - لو لقى إشارة >= MIN_SCORE: يبعتها
+    - لو ملقاش: يكمل الدورة التالية بدون رسالة
+    - فاصل SIGNAL_LOOP_GAP_SECONDS بين الدورات (تخفيف الضغط على APIs)
+    """
+    logger.info(f"🔄 بدء السكان المستمر — فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
+    # ننتظر قليلاً عند البدء حتى يجهز البوت
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            # نتجنب التشغيل المتزامن لو حد عمل /scan في نفس اللحظة
+            if job_locks["check_signals"].locked():
+                logger.info("⏸  السكان المستمر — منتظر انتهاء فحص يدوي")
+                await asyncio.sleep(SIGNAL_LOOP_GAP_SECONDS)
+                continue
+
+            async with job_locks["check_signals"]:
+                last_job_run["check_signals"] = datetime.now()
+                logger.info("🔍 دورة سكان مستمرة...")
+                await check_signals(bot)
+
+            await asyncio.sleep(SIGNAL_LOOP_GAP_SECONDS)
+
+        except asyncio.CancelledError:
+            logger.info("🛑 السكان المستمر — تم الإيقاف")
+            raise
+        except Exception as e:
+            logger.error(f"❌ خطأ في السكان المستمر: {e}")
+            await asyncio.sleep(SIGNAL_LOOP_ERR_GAP)
+
+
 # ==================== أوامر البوت ====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 Altcoin Smart Scanner Bot v3\n\n"
-        "✨ الجديد:\n"
+        "🚀 Altcoin Smart Scanner Bot v3.1\n\n"
+        "✨ الجديد في v3.1:\n"
+        "• 🔄 سكان البامب مستمر بلا توقف\n"
+        "• 📡 تقرير الفوليوم: قوي وقوي جداً فقط (≥70%)\n"
         "• مؤشرات متطورة (RSI Div, CVD, Wyckoff, Smart Money)\n"
-        "• الحد الأدنى للإشارة: 80/100\n"
-        "• الشروط منظمة تحت بعض\n\n"
-        "التقارير التلقائية:\n"
-        "📊 كل 4 ساعات: أعلى 50 عملة زادت سيولتها\n"
-        "🚨 كل 30 دقيقة: إشارات Pre-Pump (>= 80)\n\n"
+        "• الحد الأدنى للإشارة: 80/100\n\n"
+        "التشغيل التلقائي:\n"
+        f"📊 تقرير الفوليوم كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
+        f"🔄 سكان Pre-Pump مستمر (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n\n"
         "الأوامر:\n"
-        "/report  — تقرير فوري لأعلى 50 زيادة سيولة\n"
+        "/report  — تقرير فوري لقوة السير\n"
         "/scan    — فحص الإشارات الآن\n"
         "/info ETH — توكنوميكس\n"
         "/vol ETH — حجم تداول\n"
@@ -1445,10 +1508,19 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # حالة السكان المستمر
+    scanner = context.application.bot_data.get("scanner_task")
+    scanner_status = "🔄 شغال مستمر" if (scanner and not scanner.done()) else "⛔ متوقف"
+    last = last_job_run.get("check_signals")
+    last_str = last.strftime("%H:%M:%S") if last else "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ البوت شغال — v3\n"
-        f"📊 تقرير كل {SCAN_INTERVAL_MINUTES} دقيقة\n"
-        f"🔍 فحص إشارات كل 30 دقيقة (score >= {MIN_SCORE})\n"
+        f"✅ البوت شغال — v3.1\n"
+        f"📊 تقرير الفوليوم كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
+        f"   فلتر قوة السير: ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}%\n"
+        f"🔍 سكان البامب: {scanner_status}\n"
+        f"   فاصل بين الدورات: {SIGNAL_LOOP_GAP_SECONDS}ث\n"
+        f"   آخر دورة: {last_str}\n"
+        f"   حد الإشارة: score ≥ {MIN_SCORE}\n"
         f"🔬 17 مؤشر متطور\n"
         f"📡 CMC + Gate.io\n"
         f"🔔 الإرسال: الأدمن فقط (مع lock ضد الإرسال المزدوج)"
@@ -1458,12 +1530,39 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Chat ID:\n{update.effective_chat.id}")
 
 
+# ✅ post_init hook لبدء السكان المستمر في الخلفية بعد جاهزية البوت
+async def _post_init(app: Application):
+    # نشغل السكان المستمر كـ background task
+    app.bot_data["scanner_task"] = asyncio.create_task(
+        continuous_signal_scanner(app.bot)
+    )
+    logger.info("✅ تم تشغيل السكان المستمر في الخلفية")
+
+
+async def _post_shutdown(app: Application):
+    # إيقاف السكان المستمر بأمان عند إغلاق البوت
+    task = app.bot_data.get("scanner_task")
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        logger.info("✅ تم إيقاف السكان المستمر")
+
+
 # ==================== ✅ تشغيل البوت مع منع التشغيل المزدوج ====================
 def main():
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_TOKEN)
+        .post_init(_post_init)
+        .post_shutdown(_post_shutdown)
+        .build()
+    )
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("report",  cmd_report))
     app.add_handler(CommandHandler("scan",    cmd_scan))
@@ -1483,23 +1582,20 @@ def main():
         try: j.schedule_removal()
         except: pass
 
+    # ✅ تقرير الفوليوم فقط يبقى مجدولاً — السكان أصبح مستمراً عبر post_init
     jq.run_repeating(
         job_volume_report,
         interval=SCAN_INTERVAL_MINUTES*60,
         first=30,
         name="volume_report_job"
     )
-    jq.run_repeating(
-        job_check_signals,
-        interval=1800,
-        first=120,
-        name="check_signals_job"
-    )
 
     print("="*60)
-    print("🚀 Altcoin Smart Scanner Bot v3 - Advanced Edition")
+    print("🚀 Altcoin Smart Scanner Bot v3.1 - Continuous Edition")
     print(f"📊 تقرير زيادة السيولة كل {SCAN_INTERVAL_MINUTES} دقيقة")
-    print(f"🚨 إشارات Pre-Pump كل 30 دقيقة (score >= {MIN_SCORE})")
+    print(f"   فلتر قوة السير: >= {MIN_FLOW_SCORE_FOR_REPORT:.0f}% (قوي/قوي جداً فقط)")
+    print(f"🔄 سكان البامب: مستمر بلا توقف (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)")
+    print(f"   حد الإشارة: score >= {MIN_SCORE}")
     print(f"🔬 17 مؤشر تقني متطور")
     print(f"🔒 Lock نشط ضد الإرسال المزدوج")
     print(f"🔔 الإرسال: الأدمن فقط")
