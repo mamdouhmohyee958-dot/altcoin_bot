@@ -39,10 +39,18 @@ MAX_MARKET_CAP            = 2_000_000_000
 MIN_VOLUME_REPORT         = 5_000_000
 MIN_VOL_CHANGE_FOR_REPORT = 20.0
 # ✅ جديد v3.1: سكان البامب المستمر
-SIGNAL_LOOP_GAP_SECONDS = 90      # فاصل بين دورات السكان المستمر
+SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
 SIGNAL_LOOP_ERR_GAP     = 30      # فاصل بعد خطأ
 # ✅ جديد v3.1: فلتر تقرير الفوليوم
 MIN_FLOW_SCORE_FOR_REPORT = 70.0  # يبعث القوي والقوي جداً فقط (>=70%)
+# ✅ جديد v3.2: فلاتر الشراء + cooldown أقصر للسكان المستمر
+MIN_BUY_DOMINANCE         = 55.0  # نسبة الفوليوم الشرائي من الإجمالي (شراء غالب)
+SIGNAL_COOLDOWN_HOURS     = 6     # كان 24h — قللناه عشان السكان المستمر
+# ✅ جديد v4.1 — كل عملات Gate.io
+USE_FULL_GATE_SCAN        = True       # True = فحص كل Gate.io | False = CMC top 500
+GATE_MIN_VOLUME_USD       = 500_000    # تجاهل عملات بفوليوم أقل (ميتة) لتوفير الوقت
+GATE_MAX_CANDIDATES       = 1500       # سقف عدد العملات في الفحص الواحد
+GATE_PARALLEL_LIMIT       = 25         # طلبات كلاينز متوازية (زدناها لـ 25)
 
 # ==================== ✅ نظام النقاط المتطور (مجموع = 130 → mapped to 100) ====================
 SCORE_RVOL              = 15
@@ -65,6 +73,18 @@ SCORE_EMA_CROSS         = 7
 SCORE_VWAP_CROSS        = 5
 SCORE_DEC_SELL          = 4
 SCORE_CANDLE_GROWTH     = 4
+
+# ✅ v4.0 — Confluence Engine
+# المحركات الثلاثة + شرط 2/3 على الأقل لإرسال الإشارة
+CONFLUENCE_MOMENTUM_REQ  = 3   # RSI Recovery + MACD + Stoch  (3/3 لاجتياز Momentum)
+CONFLUENCE_SMART_REQ     = 3   # CVD + OF + Wyckoff + Smart   (3/4 لاجتياز Smart Money)
+CONFLUENCE_BREAKOUT_REQ  = 3   # Squeeze + Surge + Above MA + HL (3/4 لاجتياز Breakout)
+CONFLUENCE_ENGINES_REQ   = 2   # كم محرك لازم يعطي ✅ (2/3)
+SCORE_CONFLUENCE_BONUS   = 8   # نقاط إضافية لكل محرك ناجح
+# ✅ v4.0 — VIP markers
+VIP_FLOW_SCORE_MIN       = 70   # قوة سير الشراء
+VIP_BUY_DOMINANCE_MIN    = 60   # هيمنة الشراء
+VIP_BUY_TREND_HOURS      = 3    # ساعات متتالية من تصاعد الشراء
 
 logging.basicConfig(
     level=logging.INFO,
@@ -272,6 +292,107 @@ async def fetch_cmc_single(session, symbol):
         logger.error(f"CMC single error: {e}"); return None
 
 
+# ==================== ✅ v4.1 — Gate.io: كل العملات ====================
+# نقطة الوصول الكاملة: ~1700-2500 زوج USDT في Gate.io
+# الفكرة: نستخدم Gate.io كمصدر العملات، ونثري بـ CMC لما متاح
+
+async def fetch_gate_tickers(session):
+    """
+    يرجع كل tickers من Gate.io دفعة واحدة (سريع جداً، طلب واحد)
+    كل ticker يحتوي: last (السعر), base_volume, quote_volume,
+                     change_percentage, currency_pair
+    """
+    url = "https://api.gateio.ws/api/v4/spot/tickers"
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+            if r.status != 200:
+                logger.error(f"Gate tickers status {r.status}")
+                return []
+            data = await r.json()
+        # فقط أزواج USDT
+        usdt = [t for t in data if t.get("currency_pair", "").endswith("_USDT")]
+        logger.info(f"Gate.io: {len(usdt)} زوج USDT")
+        return usdt
+    except Exception as e:
+        logger.error(f"Gate tickers error: {e}")
+        return []
+
+
+def parse_gate_ticker(t):
+    """تحويل ticker من Gate.io إلى dict موحّد"""
+    pair  = t.get("currency_pair", "")
+    sym   = pair.replace("_USDT", "")
+    try:
+        price       = float(t.get("last") or 0)
+        vol_usdt    = float(t.get("quote_volume") or 0)   # فوليم 24h بالـ USDT
+        change_24h  = float(t.get("change_percentage") or 0)
+        high_24h    = float(t.get("high_24h") or price)
+        low_24h     = float(t.get("low_24h") or price)
+    except (ValueError, TypeError):
+        return None
+    return {
+        "symbol":           sym,
+        "name":             sym,             # سيُستبدل بـ CMC name لو متاح
+        "price":            price,
+        "volume_24h":       vol_usdt,
+        "price_change_24h": change_24h,
+        "price_change_1h":  0.0,             # غير متاح من Gate tickers (سنستخرجه من الكلاينز)
+        "price_change_7d":  0.0,             # غير متاح
+        "volume_change":    0.0,             # غير متاح (سنحسبه من الكلاينز)
+        "high_24h":         high_24h,
+        "low_24h":          low_24h,
+        "num_market_pairs": 1,
+        "rank":             999999,          # سيُستبدل لو في CMC
+        "market_cap":       0,               # سيُستبدل لو في CMC
+        "tags":             [],
+        "source":           "gate",
+    }
+
+
+async def build_all_gate_candidates(session, min_volume_usd=500_000):
+    """
+    ✅ v4.1 — يبني قائمة كل عملات Gate.io USDT النشطة
+    - يجلب tickers من Gate (طلب واحد)
+    - يفلتر بحد أدنى للفوليوم لتوفير الوقت
+    - يجلب CMC ويُثري البيانات للعملات المتطابقة
+    """
+    gate_tickers = await fetch_gate_tickers(session)
+    if not gate_tickers:
+        return []
+
+    # تحويل + prefilter بالفوليوم لتقليل الحمل
+    candidates = []
+    for t in gate_tickers:
+        d = parse_gate_ticker(t)
+        if not d: continue
+        if d["volume_24h"] < min_volume_usd: continue  # عملات ميتة
+        if d["price"] <= 0: continue
+        candidates.append(d)
+    logger.info(f"Gate بعد فلتر الفوليم ≥ ${min_volume_usd/1000:.0f}K: {len(candidates)} عملة")
+
+    # إثراء البيانات من CMC (للعملات المتطابقة فقط)
+    cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+    cmc_by_sym = {c.get("symbol"): c for c in cmc_raw} if cmc_raw else {}
+    enriched_count = 0
+    for d in candidates:
+        cmc = cmc_by_sym.get(d["symbol"])
+        if cmc:
+            parsed = parse_coin(cmc)
+            d["name"]             = parsed["name"]
+            d["price_change_1h"]  = parsed["price_change_1h"]
+            d["price_change_7d"]  = parsed["price_change_7d"]
+            d["volume_change"]    = parsed["volume_change"]
+            d["num_market_pairs"] = parsed["num_market_pairs"]
+            d["rank"]             = parsed["rank"]
+            d["market_cap"]       = parsed["market_cap"]
+            d["tags"]             = [t.lower() for t in cmc.get("tags", [])]
+            d["source"]           = "gate+cmc"
+            enriched_count += 1
+    logger.info(f"إثراء من CMC: {enriched_count} عملة (الباقي {len(candidates)-enriched_count} من Gate فقط)")
+    return candidates
+
+
+# ==================== الكلاينز ====================
 async def fetch_klines(session, symbol, interval="1h", limit=48):
     url    = "https://api.gateio.ws/api/v4/spot/candlesticks"
     params = {
@@ -382,6 +503,193 @@ def calc_vwap_cross(c):
     prev_below = c[-2]["close"] < vwap
     curr_above = c[-1]["close"] > vwap
     return prev_below and curr_above
+
+
+# ============================================================
+# ✅ v4.0 — مؤشرات جديدة للمحركات المُدمَجة
+# ============================================================
+
+def calc_ema(values, period):
+    """EMA على قائمة قيم"""
+    if not values or len(values) < period: return None
+    k = 2 / (period + 1)
+    ema = sum(values[:period]) / period
+    for v in values[period:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+
+def calc_macd(c, fast=12, slow=26, signal=9):
+    """
+    MACD: يرجع (macd_line, signal_line, histogram, bullish)
+    bullish = MACD فوق Signal وارتفع آخر شمعة
+    """
+    if len(c) < slow + signal + 5:
+        return None
+    closes = [x["close"] for x in c]
+    # احسب EMA لكل قيمة
+    def ema_series(vals, p):
+        if len(vals) < p: return []
+        k = 2 / (p + 1)
+        s = sum(vals[:p]) / p
+        out = [None] * (p - 1) + [s]
+        for v in vals[p:]:
+            s = v * k + s * (1 - k)
+            out.append(s)
+        return out
+    ema_fast = ema_series(closes, fast)
+    ema_slow = ema_series(closes, slow)
+    if not ema_fast[-1] or not ema_slow[-1]: return None
+    macd_line = [(f - s) if (f is not None and s is not None) else None
+                 for f, s in zip(ema_fast, ema_slow)]
+    macd_valid = [m for m in macd_line if m is not None]
+    if len(macd_valid) < signal + 2: return None
+    sig_series = ema_series(macd_valid, signal)
+    if not sig_series[-1]: return None
+    macd_now    = macd_valid[-1]
+    macd_prev   = macd_valid[-2]
+    sig_now     = sig_series[-1]
+    sig_prev    = sig_series[-2] if sig_series[-2] else sig_now
+    hist_now    = macd_now - sig_now
+    hist_prev   = macd_prev - sig_prev
+    bullish_cross   = macd_prev <= sig_prev and macd_now > sig_now
+    bullish_rising  = macd_now > sig_now and hist_now > hist_prev
+    bullish         = bullish_cross or bullish_rising
+    return {
+        "macd": macd_now, "signal": sig_now, "hist": hist_now,
+        "bullish": bullish, "cross": bullish_cross, "rising": bullish_rising
+    }
+
+
+def calc_stochastic(c, k_period=14, d_period=3):
+    """
+    Stochastic %K + %D، يكتشف bullish crossover من oversold
+    """
+    if len(c) < k_period + d_period + 2: return None
+    k_values = []
+    for i in range(k_period - 1, len(c)):
+        window = c[i - k_period + 1: i + 1]
+        hh = max(x["high"] for x in window)
+        ll = min(x["low"]  for x in window)
+        rng = hh - ll
+        k = ((c[i]["close"] - ll) / rng * 100) if rng > 0 else 50
+        k_values.append(k)
+    if len(k_values) < d_period + 1: return None
+    d_values = [sum(k_values[i-d_period+1:i+1])/d_period
+                for i in range(d_period-1, len(k_values))]
+    if len(d_values) < 2: return None
+    k_now  = k_values[-1]
+    k_prev = k_values[-2]
+    d_now  = d_values[-1]
+    d_prev = d_values[-2]
+    bullish_cross    = k_prev <= d_prev and k_now > d_now
+    bullish_from_low = k_prev < 30 and k_now > k_prev
+    bullish          = (bullish_cross and k_now < 60) or bullish_from_low
+    return {"k": k_now, "d": d_now, "bullish": bullish, "oversold_recovery": bullish_from_low}
+
+
+def calc_buy_volume_trend(c, hours=3):
+    """
+    هل الفوليوم الشرائي صاعد لـ N ساعات متتالية؟ (للـ VIP marker)
+    """
+    if len(c) < hours + 1: return False, 0
+    buy_vols = []
+    for x in c[-hours-1:]:
+        bv = x["volume"] if x["close"] >= x["open"] else 0
+        buy_vols.append(bv)
+    rising = sum(1 for i in range(1, len(buy_vols)) if buy_vols[i] > buy_vols[i-1])
+    return rising >= hours, rising
+
+
+def calc_vwap_value(c, period=20):
+    """قيمة VWAP الحالية"""
+    if len(c) < period: return None
+    sub = c[-period:]
+    tot_vol = sum(x["volume"] for x in sub)
+    if tot_vol == 0: return None
+    return sum(((x["high"]+x["low"]+x["close"])/3) * x["volume"] for x in sub) / tot_vol
+
+
+def calc_velocity(c, period=5):
+    """
+    سرعة الحركة = نسبة التغير في السعر مقسومة على الـ ATR (تطبيع)
+    قيمة عالية = حركة سريعة، قيمة منخفضة = حركة بطيئة
+    """
+    if len(c) < period + 14: return 0.0
+    price_now = c[-1]["close"]
+    price_old = c[-period]["close"]
+    change_pct = (price_now - price_old) / price_old * 100 if price_old > 0 else 0
+    atr, _ = calc_atr(c)
+    if atr <= 0 or price_now <= 0: return abs(change_pct)
+    atr_pct = atr / price_now * 100
+    # velocity = حركة السعر بالنسبة للتقلب الطبيعي
+    return change_pct / atr_pct if atr_pct > 0 else 0
+
+
+def calc_trend_quality(c, period=20):
+    """
+    احترام الاتجاه = مدى نظافة الاتجاه الصاعد
+    نقيس: كم شمعة فوق MA20 + كم higher highs/lows + R² للانحدار
+    يرجع 0-100
+    """
+    if len(c) < period + 5: return 50.0
+    sub = c[-period:]
+    closes = [x["close"] for x in sub]
+    # 1) نسبة الشموع فوق MA20
+    ma = sum(closes) / len(closes)
+    above_pct = sum(1 for cl in closes if cl > ma) / len(closes) * 100
+    # 2) R² للانحدار الخطي
+    n = len(closes)
+    mean_x = (n - 1) / 2
+    mean_y = sum(closes) / n
+    num   = sum((i - mean_x) * (closes[i] - mean_y) for i in range(n))
+    den_x = sum((i - mean_x)**2 for i in range(n))
+    den_y = sum((closes[i] - mean_y)**2 for i in range(n))
+    if den_x == 0 or den_y == 0:
+        r2 = 0
+    else:
+        slope = num / den_x
+        ss_total = den_y
+        ss_res   = sum((closes[i] - (mean_y + slope*(i - mean_x)))**2 for i in range(n))
+        r2 = max(0, 1 - ss_res/ss_total) if ss_total > 0 else 0
+    # 3) higher lows count
+    lows = [x["low"] for x in sub]
+    hl_count = sum(1 for i in range(1, len(lows)) if lows[i] >= lows[i-1])
+    hl_pct   = hl_count / (len(lows)-1) * 100 if len(lows) > 1 else 0
+    # المجموع المرجح
+    quality = (above_pct * 0.30) + (r2 * 100 * 0.40) + (hl_pct * 0.30)
+    return min(100.0, max(0.0, quality))
+
+
+def calc_liquidity_depth(coin_data, candles):
+    """
+    وجود السيولة = مزيج من فوليوم 24h + عدد الأسواق + استمرارية الفوليوم
+    يرجع 0-100
+    """
+    vol_24h = coin_data.get("volume_24h", 0)
+    pairs   = coin_data.get("num_market_pairs", 0)
+    # درجة الفوليوم: log-scale
+    if vol_24h <= 0:
+        vol_score = 0
+    else:
+        # 1M=20, 10M=50, 100M=80, 1B=100
+        vol_score = min(100, max(0, (math.log10(vol_24h) - 5) * 25))
+    # درجة الأسواق
+    pairs_score = min(100, pairs * 1.5)  # 67 سوق = 100
+    # استمرارية الفوليوم: تباين أقل = استقرار أكثر
+    if candles and len(candles) >= 24:
+        vols = [x["volume"] for x in candles[-24:]]
+        avg_v = sum(vols) / 24
+        if avg_v > 0:
+            std_v = math.sqrt(sum((v - avg_v)**2 for v in vols) / 24)
+            cv = std_v / avg_v  # coefficient of variation
+            # cv < 0.5 = مستقر جداً، cv > 2 = متذبذب
+            consist_score = max(0, min(100, 100 - cv * 40))
+        else:
+            consist_score = 0
+    else:
+        consist_score = 50
+    return (vol_score * 0.50) + (pairs_score * 0.20) + (consist_score * 0.30)
 
 
 # ============================================================
@@ -550,6 +858,107 @@ def calc_ema_cross(c):
     return ema9_prev <= ema21_prev and ema9_now > ema21_now
 
 
+# ============================================================
+# ✅ v4.0 — Confluence Engines (3 محركات مدمجة)
+# ============================================================
+
+def evaluate_confluence_engines(candles, details):
+    """
+    يقيم 3 محركات تعمل بالـ confluence:
+      1) Momentum     = RSI + MACD + Stochastic (3/3)
+      2) Smart Money  = CVD + Order Flow + Wyckoff + Smart Money (3/4)
+      3) Breakout     = BB Squeeze + Vol Surge + Above MA + Higher Lows (3/4)
+    يرجع dict بحالة كل محرك + تفاصيل + bonus_points
+    """
+    if not candles or len(candles) < 30:
+        return {
+            "momentum": {"pass": False, "score": 0, "checks": []},
+            "smart":    {"pass": False, "score": 0, "checks": []},
+            "breakout": {"pass": False, "score": 0, "checks": []},
+            "engines_passed": 0,
+            "bonus_points":   0,
+        }
+
+    # ───── Engine 1: MOMENTUM ─────
+    rsi_val = calc_rsi(candles)
+    rsi_recovery = (rsi_val > 50 and rsi_val < 70 and  # خرج من oversold بس لسه مش مشتعل
+                    calc_rsi(candles[:-3]) < rsi_val)
+    macd = calc_macd(candles)
+    macd_ok = bool(macd and macd["bullish"])
+    stoch = calc_stochastic(candles)
+    stoch_ok = bool(stoch and stoch["bullish"])
+    mom_checks = [
+        ("RSI خرج من oversold",  rsi_recovery),
+        ("MACD bullish/cross",   macd_ok),
+        ("Stochastic bullish",   stoch_ok),
+    ]
+    mom_passed = sum(1 for _, ok in mom_checks if ok)
+    mom_pass   = mom_passed >= CONFLUENCE_MOMENTUM_REQ
+
+    # ───── Engine 2: SMART MONEY ─────
+    smart_checks = [
+        ("CVD صاعد (تجميع)",         details.get("cvd_pos", False)),
+        ("Order Flow ≥ 65%",          details.get("order_flow", False)),
+        ("Wyckoff Accumulation",      details.get("wyckoff", False)),
+        ("Smart Money Footprint",     details.get("smart_money", False)),
+    ]
+    smart_passed = sum(1 for _, ok in smart_checks if ok)
+    smart_pass   = smart_passed >= CONFLUENCE_SMART_REQ
+
+    # ───── Engine 3: BREAKOUT READINESS ─────
+    brk_checks = [
+        ("BB Squeeze نشط",            details.get("squeeze", False) or details.get("bb_width", 999) < 8),
+        ("Volume Surge ≥ 2.5x",       details.get("vol_surge", False) or details.get("surge_ratio", 0) >= 2.5),
+        ("سعر فوق MA20",              details.get("above_ma", False)),
+        ("Higher Lows",               details.get("higher_lows", False)),
+    ]
+    brk_passed = sum(1 for _, ok in brk_checks if ok)
+    brk_pass   = brk_passed >= CONFLUENCE_BREAKOUT_REQ
+
+    # ───── Total ─────
+    engines_passed = int(mom_pass) + int(smart_pass) + int(brk_pass)
+    bonus_points   = engines_passed * SCORE_CONFLUENCE_BONUS
+
+    return {
+        "momentum": {"pass": mom_pass,   "score": mom_passed,   "checks": mom_checks,
+                     "rsi": round(rsi_val, 1),
+                     "macd_hist": round(macd["hist"], 4) if macd else None,
+                     "stoch_k":   round(stoch["k"], 1) if stoch else None},
+        "smart":    {"pass": smart_pass, "score": smart_passed, "checks": smart_checks},
+        "breakout": {"pass": brk_pass,   "score": brk_passed,   "checks": brk_checks},
+        "engines_passed": engines_passed,
+        "bonus_points":   bonus_points,
+    }
+
+
+def evaluate_vip_status(candles, flow):
+    """
+    العملة تستحق علامة 💎 VIP إذا:
+      - قوة سير الشراء >= 70%
+      - هيمنة الشراء >= 60%
+      - الفوليوم الشرائي صاعد لمدة 3 ساعات متتالية
+      - السعر فوق VWAP
+    """
+    if not flow or not candles or len(candles) < 24:
+        return False, []
+    checks = []
+    # 1) قوة السير
+    c1 = flow.get("score", 0) >= VIP_FLOW_SCORE_MIN
+    checks.append(("قوة سير شرائي ≥ 70%", c1))
+    # 2) هيمنة الشراء
+    c2 = flow.get("buy_dominance", 0) >= VIP_BUY_DOMINANCE_MIN
+    checks.append(("هيمنة الشراء ≥ 60%", c2))
+    # 3) شراء صاعد 3 ساعات
+    rising, _ = calc_buy_volume_trend(candles, hours=VIP_BUY_TREND_HOURS)
+    checks.append(("شراء صاعد 3 ساعات متتالية", rising))
+    # 4) فوق VWAP
+    vwap = calc_vwap_value(candles)
+    above_vwap = bool(vwap and candles[-1]["close"] > vwap)
+    checks.append(("السعر فوق VWAP", above_vwap))
+    is_vip = all(ok for _, ok in checks)
+    return is_vip, checks
+
+
 # ==================== ✅ نظام النقاط المتطور ====================
 def score_coin(candles, cmc):
     sc, rs, dt = 0, [], {}
@@ -696,74 +1105,104 @@ def score_coin(candles, cmc):
         "dec_sell":     dec_sell,
         "candle_grow":  growing_candles,
     }
-    final_score = min(int(sc * 100 / 130), 100)
+
+    # ═══════════════ ✅ v4.0 — تطبيق المحركات المُدمَجة ═══════════════
+    confluence = evaluate_confluence_engines(candles, dt)
+    sc += confluence["bonus_points"]
+    if confluence["momentum"]["pass"]:
+        rs.append(f"⚙️ محرك Momentum ({confluence['momentum']['score']}/3)")
+    if confluence["smart"]["pass"]:
+        rs.append(f"💰 محرك Smart Money ({confluence['smart']['score']}/4)")
+    if confluence["breakout"]["pass"]:
+        rs.append(f"🚀 محرك Breakout ({confluence['breakout']['score']}/4)")
+
+    dt["confluence"] = confluence
+    # نضع علم confluence_passed لاستخدامه في الفلتر
+    dt["confluence_passed"] = confluence["engines_passed"] >= CONFLUENCE_ENGINES_REQ
+
+    # الـ raw score القصوى = 130 (المؤشرات الأساسية) + 24 (3 محركات × 8 bonus) = 154
+    final_score = min(int(sc * 100 / 154), 100)
     return {"score": final_score, "raw_score": sc, "reasons": rs, "details": dt}
 
 
 # ==================== قوة سير الفوليوم (Volume Flow Strength) ====================
+# v3.2: نحسب من الفوليوم الشرائي فقط (الشموع الخضراء: close >= open)
 # معيار مرجّح: لحظي (40%) + اتجاه (35%) + تسارع (25%)
+def _buy_volume(candle):
+    """فوليوم شرائي للشمعة: لو الشمعة خضراء (close>=open) نأخذ الفوليوم كاملاً، لو حمراء = 0"""
+    return candle["volume"] if candle["close"] >= candle["open"] else 0.0
+
+
 def calc_volume_flow_strength(candles):
     """
-    حساب قوة سير الفوليوم كنسبة مئوية 0-100+ من 3 مكونات:
-    - لحظي: RVOL آخر ساعة vs متوسط 24 ساعة
-    - اتجاه: ميل خط انحدار الفوليوم على آخر 12 ساعة
-    - تسارع: مقارنة آخر 4 ساعات بالـ 20 ساعة قبلها
+    حساب قوة سير الفوليوم الشرائي كنسبة مئوية 0-150% من 3 مكونات:
+    - لحظي: نسبة فوليوم شرائي آخر ساعة vs متوسط الفوليوم الشرائي 24 ساعة
+    - اتجاه: ميل خط انحدار الفوليوم الشرائي على آخر 12 ساعة
+    - تسارع: مقارنة آخر 4 ساعات شرائي بالـ 20 ساعة شرائي قبلها
     """
     if not candles or len(candles) < 24:
         return None  # بيانات غير كافية
 
-    vols = [c["volume"] for c in candles]
-    n    = len(vols)
+    # ✅ نأخذ الفوليوم الشرائي فقط (الشموع الخضراء)
+    buy_vols = [_buy_volume(c) for c in candles]
+    n = len(buy_vols)
 
-    # --- 1) لحظي: RVOL آخر ساعة (40%) ---
-    last_hour = vols[-1]
-    avg_24h   = sum(vols[-24:-1]) / 23 if n >= 24 else (sum(vols[:-1]) / max(1, n-1))
-    inst_ratio = (last_hour / avg_24h) if avg_24h > 0 else 1.0
-    # تحويل لنسبة 0-100: 1x=50%, 2x=100%, 3x+=150% (مع سقف)
-    inst_score = min(150.0, max(0.0, (inst_ratio - 0.2) * 62.5))  # 0.2x=0, 1.0x=50, 2.0x=112.5
+    # ملاحظة: لو كل الفوليوم بيعي تماماً (نادر جداً) المجاميع تساوي صفر — نُعيد None
+    if sum(buy_vols) == 0:
+        return None
+
+    # --- 1) لحظي: RVOL آخر ساعة شرائي (40%) ---
+    last_hour = buy_vols[-1]
+    avg_24h = sum(buy_vols[-24:-1]) / 23 if n >= 24 else (sum(buy_vols[:-1]) / max(1, n-1))
+    inst_ratio = (last_hour / avg_24h) if avg_24h > 0 else (1.0 if last_hour == 0 else 3.0)
+    # تحويل لنسبة 0-150: 0.2x=0, 1.0x=50, 2.0x=112, 3.0x+=150 (سقف)
+    inst_score = min(150.0, max(0.0, (inst_ratio - 0.2) * 62.5))
 
     # --- 2) اتجاه: ميل الانحدار على آخر 12 ساعة (35%) ---
-    window = vols[-12:] if n >= 12 else vols
-    m      = len(window)
+    window = buy_vols[-12:] if n >= 12 else buy_vols
+    m = len(window)
     if m >= 3 and sum(window) > 0:
-        avg_w  = sum(window) / m
-        # ميل بسيط: (sum(i*v) - sum(i)*avg) / (sum(i²) - n*mean(i)²)
+        avg_w = sum(window) / m
         mean_i = (m - 1) / 2
-        num    = sum((i - mean_i) * (v - avg_w) for i, v in enumerate(window))
-        den    = sum((i - mean_i) ** 2 for i in range(m))
-        slope  = num / den if den > 0 else 0
-        # تطبيع: الميل كنسبة من المتوسط × 100
+        num = sum((i - mean_i) * (v - avg_w) for i, v in enumerate(window))
+        den = sum((i - mean_i) ** 2 for i in range(m))
+        slope = num / den if den > 0 else 0
         slope_pct = (slope / avg_w * 100) if avg_w > 0 else 0
-        # ميل +10% لكل ساعة = اتجاه قوي جداً = 100
         trend_score = min(150.0, max(0.0, 50 + slope_pct * 5))
     else:
         trend_score = 50.0
 
     # --- 3) تسارع: آخر 4 ساعات vs الـ 20 ساعة قبلها (25%) ---
     if n >= 24:
-        recent_4  = sum(vols[-4:]) / 4
-        older_20  = sum(vols[-24:-4]) / 20
-        accel_ratio = (recent_4 / older_20) if older_20 > 0 else 1.0
+        recent_4 = sum(buy_vols[-4:]) / 4
+        older_20 = sum(buy_vols[-24:-4]) / 20
+        accel_ratio = (recent_4 / older_20) if older_20 > 0 else (1.0 if recent_4 == 0 else 3.0)
     elif n >= 8:
-        half       = n // 2
-        recent_h   = sum(vols[-half:]) / half
-        older_h    = sum(vols[:-half]) / max(1, n - half)
-        accel_ratio = (recent_h / older_h) if older_h > 0 else 1.0
+        half = n // 2
+        recent_h = sum(buy_vols[-half:]) / half
+        older_h = sum(buy_vols[:-half]) / max(1, n - half)
+        accel_ratio = (recent_h / older_h) if older_h > 0 else (1.0 if recent_h == 0 else 3.0)
     else:
         accel_ratio = 1.0
-    # 1x=50, 2x=100, 3x+=150
     accel_score = min(150.0, max(0.0, (accel_ratio - 0.2) * 62.5))
+
+    # --- نسبة الفوليوم الشرائي من الإجمالي (مؤشر إضافي) ---
+    total_vols = [c["volume"] for c in candles[-24:]] if n >= 24 else [c["volume"] for c in candles]
+    total_24 = sum(total_vols)
+    buy_24 = sum(buy_vols[-24:]) if n >= 24 else sum(buy_vols)
+    buy_dominance = (buy_24 / total_24 * 100) if total_24 > 0 else 0  # نسبة الشراء %
 
     # --- المجموع المرجّح ---
     final = (inst_score * 0.40) + (trend_score * 0.35) + (accel_score * 0.25)
 
     return {
-        "score":       round(final, 1),
-        "instant":     round(inst_score, 1),
-        "trend":       round(trend_score, 1),
-        "accel":       round(accel_score, 1),
-        "inst_ratio":  round(inst_ratio, 2),
-        "accel_ratio": round(accel_ratio, 2),
+        "score":         round(final, 1),
+        "instant":       round(inst_score, 1),
+        "trend":         round(trend_score, 1),
+        "accel":         round(accel_score, 1),
+        "inst_ratio":    round(inst_ratio, 2),
+        "accel_ratio":   round(accel_ratio, 2),
+        "buy_dominance": round(buy_dominance, 1),  # ✅ نسبة الفوليوم الشرائي
     }
 
 
@@ -808,27 +1247,45 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
     chat_target = target_chat if target_chat else int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
-        raw = await fetch_cmc(session, limit=CMC_LIMIT)
+        # ✅ v4.1 — استخدام Gate.io الكامل بدل CMC top 500
+        if USE_FULL_GATE_SCAN:
+            candidates_raw = await build_all_gate_candidates(
+                session, min_volume_usd=GATE_MIN_VOLUME_USD
+            )
+            if not candidates_raw:
+                logger.warning("Gate.io رجع فاضي — fallback لـ CMC")
+                cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+                candidates_raw = [parse_coin(c) for c in (cmc_raw or [])]
+        else:
+            cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+            if not cmc_raw:
+                await bot.send_message(chat_id=chat_target, text="فشل جلب البيانات من CMC")
+                return
+            candidates_raw = [parse_coin(c) for c in cmc_raw]
 
-    if not raw:
-        await bot.send_message(chat_id=chat_target, text="فشل جلب البيانات من CMC")
+    if not candidates_raw:
+        await bot.send_message(chat_id=chat_target, text="فشل جلب البيانات")
         return
 
     coins = []
-    for c in raw:
-        symbol = c.get("symbol","")
-        name   = c.get("name","")
-        tags   = [t.lower() for t in c.get("tags",[])]
+    for d in candidates_raw:
+        symbol = d.get("symbol","")
+        name   = d.get("name","")
+        tags   = d.get("tags", [])
         if symbol in EXCLUDED_SYMBOLS: continue
         if is_meme_coin(symbol, name, tags): continue
         if is_stock_token(symbol, name, tags): continue
-        d = parse_coin(c)
         if d["volume_24h"]    < MIN_VOLUME_REPORT:          continue
-        if d["volume_change"] < MIN_VOL_CHANGE_FOR_REPORT:  continue
+        # ملاحظة v4.1: العملات بدون بيانات CMC قد لا تملك volume_change
+        # لذا نتغاضى عن هذا الفلتر للعملات المصدرها Gate فقط
+        if d.get("source") == "gate+cmc" and d["volume_change"] < MIN_VOL_CHANGE_FOR_REPORT:
+            continue
         if is_dead_coin(d): continue
         coins.append(d)
+    logger.info(f"📋 {len(coins)} عملة بعد فلاتر التقرير")
 
-    coins.sort(key=lambda x: x["volume_change"], reverse=True)
+    # الترتيب: لو من CMC نرتب بـ volume_change، لو من Gate نرتب بالـ volume_24h
+    coins.sort(key=lambda x: (x.get("volume_change", 0), x.get("volume_24h", 0)), reverse=True)
 
     fresh = [c for c in coins if not is_coin_cooldown(c["symbol"])]
     old_c = [c for c in coins if is_coin_cooldown(c["symbol"])]
@@ -851,35 +1308,59 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
         async def _fetch_flow(coin):
             try:
                 kl = await fetch_klines(session2, coin["symbol"], interval="1h", limit=48)
+                coin["candles"] = kl
                 coin["flow"] = calc_volume_flow_strength(kl)
+                # ✅ v4.0 — VIP evaluation
+                is_vip, vip_checks = evaluate_vip_status(kl, coin["flow"])
+                coin["is_vip"]     = is_vip
+                coin["vip_checks"] = vip_checks
             except Exception:
                 coin["flow"] = None
+                coin["is_vip"] = False
+                coin["vip_checks"] = []
             return coin
         # توازي بسقف معقول
-        sem = asyncio.Semaphore(10)
+        sem = asyncio.Semaphore(GATE_PARALLEL_LIMIT)
         async def _with_sem(c):
             async with sem:
                 return await _fetch_flow(c)
         await asyncio.gather(*[_with_sem(c) for c in top50], return_exceptions=True)
 
     # ✅ جديد v3.1: استبعاد العملات ذات قوة السير الضعيف/الضعيف جداً
-    # نُبقي فقط: قوي (≥70) و قوي جداً (≥90)، ونستبعد ما دون 70 وما هو غير متاح
+    # ✅ جديد v3.2: نشترط كمان هيمنة الشراء >= MIN_BUY_DOMINANCE
+    # نُبقي فقط: قوي شرائياً (≥70%) + شراء غالب (≥55%)
     before_filter = len(top50)
-    top50 = [c for c in top50 if c.get("flow") and c["flow"].get("score", 0) >= MIN_FLOW_SCORE_FOR_REPORT]
-    # إعادة ترتيب: حسب قوة السير أولاً، ثم زيادة الفوليوم
-    top50.sort(key=lambda x: (x["flow"]["score"], x["volume_change"]), reverse=True)
-    logger.info(f"فلتر قوة السير: {before_filter} → {len(top50)} عملة (≥{MIN_FLOW_SCORE_FOR_REPORT}%)")
+    top50 = [
+        c for c in top50
+        if c.get("flow")
+        and c["flow"].get("score", 0) >= MIN_FLOW_SCORE_FOR_REPORT
+        and c["flow"].get("buy_dominance", 0) >= MIN_BUY_DOMINANCE
+    ]
+    # ✅ v4.0 — الترتيب: VIP أولاً، ثم قوة السير، ثم هيمنة الشراء
+    top50.sort(
+        key=lambda x: (
+            x.get("is_vip", False),
+            x["flow"]["score"],
+            x["flow"]["buy_dominance"],
+            x["volume_change"]
+        ),
+        reverse=True
+    )
+    vip_count = sum(1 for c in top50 if c.get("is_vip"))
+    logger.info(f"فلتر الشراء: {before_filter} → {len(top50)} عملة | 💎 VIP: {vip_count}")
 
     if not top50:
         try:
             await bot.send_message(
                 chat_id=chat_target,
-                text=f"📊 لا توجد عملات بقوة سير ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% حالياً\n⏰ {scan_time}",
+                text=f"📊 لا توجد عملات بسير شرائي قوي حالياً\n"
+                     f"   (المطلوب: قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%)\n"
+                     f"⏰ {scan_time}",
                 disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"خطأ ارسال تقرير فارغ: {e}")
-        logger.info("لا توجد عملات قوية بعد الفلتر")
+        logger.info("لا توجد عملات شراء قوي بعد الفلتر")
         return
 
     chunk_size = 10
@@ -889,10 +1370,12 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
         lines = []
         if idx == 1:
             lines += [
-                f"📊 أعلى Altcoin بقوة سير ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% — 24 ساعة",
+                f"📊 أعلى Altcoin بسير شرائي قوي — 24 ساعة",
                 f"⏰ {scan_time}",
-                f"📡 المصدر: CMC + Gate.io | مرتب بقوة السير ثم زيادة الفوليم",
-                f"✅ {len(top50)} عملة قوية / قوية جداً",
+                f"📡 المصدر: CMC + Gate.io | الفوليوم الشرائي فقط",
+                f"🎯 الفلتر: قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%",
+                f"✅ {len(top50)} عملة  |  💎 VIP: {vip_count}",
+                f"💎 VIP = سيولة شراء مستمرة (3h+) + فوق VWAP",
                 "━━━━━━━━━━━━━━━━━━━━", ""
             ]
 
@@ -901,29 +1384,32 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
             vc  = c["volume_change"]
             p1h = c["price_change_1h"]
             arrow = "🟢" if pc > 0 else "🔴"
+            vip_badge = " 💎 VIP" if c.get("is_vip") else ""
             if vc >= 200:   vol_icon = "🔥🔥🔥"
             elif vc >= 100: vol_icon = "🔥🔥"
             elif vc >= 50:  vol_icon = "🔥"
             else:           vol_icon = "📈"
 
-            lines.append(f"{i}. {arrow} {c['symbol']} — {escape_md(c['name'])}")
+            lines.append(f"{i}. {arrow} {c['symbol']}{vip_badge} — {escape_md(c['name'])}")
             lines.append(f"   💵 {fmt_price(c['price'])}  ({pc:+.1f}%)  |  1h: {p1h:+.1f}%")
             lines.append(f"   💰 فوليم 24h: {fmt_vol(c['volume_24h'])}")
             lines.append(f"   {vol_icon} زيادة الفوليم: {vc:+.0f}%")
-            # ===== قوة سير الفوليوم (مرجّح: لحظي + اتجاه + تسارع) =====
+            # ===== قوة السير الشرائي + هيمنة الشراء =====
             flow = c.get("flow")
             if flow:
                 label, _ = classify_flow_strength(flow["score"])
-                lines.append(f"   📡 قوة السير: {flow['score']:.0f}%  {label}")
+                lines.append(f"   📡 قوة سير الشراء: {flow['score']:.0f}%  {label}")
+                lines.append(f"   🟢 هيمنة الشراء: {flow['buy_dominance']:.0f}% من إجمالي الفوليوم")
             else:
-                lines.append(f"   📡 قوة السير: ❓ بيانات غير متاحة")
+                lines.append(f"   📡 قوة سير الشراء: ❓ بيانات غير متاحة")
             lines.append(f"   🌐 {c['num_market_pairs']} منصة  |  CMC #{c['rank']}")
             lines.append("")
 
         if idx == len(chunks):
             lines.append("━━━━━━━━━━━━━━━━━━━━")
-            lines.append("💡 /coin SYMBOL — تحليل كامل")
-            lines.append("💡 /vol SYMBOL  — حجم عملة")
+            lines.append("💡 /coin SYMBOL  — تحليل شامل احترافي")
+            lines.append("💡 /check SYMBOL — تقييم القوة و السيولة")
+            lines.append("💡 /vol SYMBOL   — حجم عملة")
 
         try:
             await bot.send_message(
@@ -948,42 +1434,67 @@ async def check_signals(bot: Bot, target_chat: int = None):
     chat_target = target_chat if target_chat else int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
-        raw = await fetch_cmc(session, limit=CMC_LIMIT)
-        if not raw: return
+        # ✅ v4.1 — جلب كل عملات Gate.io بدل CMC top 500
+        if USE_FULL_GATE_SCAN:
+            candidates_raw = await build_all_gate_candidates(
+                session, min_volume_usd=GATE_MIN_VOLUME_USD
+            )
+            if not candidates_raw:
+                logger.warning("Gate.io رجع فاضي — fallback لـ CMC")
+                cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+                candidates_raw = [parse_coin(c) for c in (cmc_raw or [])]
+        else:
+            cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+            if not cmc_raw: return
+            candidates_raw = [parse_coin(c) for c in cmc_raw]
 
+        # فلتر العملات المستبعدة (memes/stocks) + الفوليم الأدنى
         candidates = []
-        for c in raw:
-            symbol = c.get("symbol","")
-            name   = c.get("name","")
-            tags   = [t.lower() for t in c.get("tags",[])]
+        for d in candidates_raw:
+            symbol = d.get("symbol", "")
+            name   = d.get("name", "")
+            tags   = d.get("tags", [])
             if symbol in EXCLUDED_SYMBOLS: continue
             if is_meme_coin(symbol, name, tags): continue
-            d = parse_coin(c)
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
             candidates.append(d)
+        # سقف للأمان
+        candidates = candidates[:GATE_MAX_CANDIDATES]
+        logger.info(f"📋 سيتم فحص {len(candidates)} عملة")
+
+        # ✅ v4.1 — semaphore لتحديد التوازي + تجنب rate limits
+        sem = asyncio.Semaphore(GATE_PARALLEL_LIMIT)
 
         async def analyze(coin):
-            candles = await fetch_klines(session, coin["symbol"])
-            res     = score_coin(candles, coin)
-            sc      = res["score"]
-            # ✅ لا يضيف إلا لو النقاط >= 80
-            if sc < MIN_SCORE: return None
-            rv = res["details"].get("rvol", 1.0)
-            if len(candles) <= 5:
-                vc = coin.get("volume_change", 0)
-                if vc < 50: return None
-            else:
+            async with sem:
+                candles = await fetch_klines(session, coin["symbol"])
+                if not candles or len(candles) < 25:
+                    return None  # كلاينز غير كافية
+                res     = score_coin(candles, coin)
+                sc      = res["score"]
+                details = res["details"]
+                # ✅ لا يضيف إلا لو النقاط >= 80
+                if sc < MIN_SCORE:
+                    return None
+                # ✅ v4.0 — لا يضيف إلا لو 2 من 3 محركات اجتازت
+                if not details.get("confluence_passed", False):
+                    return None
+                rv = details.get("rvol", 1.0)
                 if rv < MIN_RVOL: return None
-            if candles and len(candles) >= 3:
                 prev_pump = calc_prev_pump(candles)
                 if prev_pump > MAX_PREV_PUMP:
                     logger.info(f"استبعاد {coin['symbol']} — pump سابق {prev_pump:.1f}%")
                     return None
-            coin.update({"score": sc, "reasons": res["reasons"],
-                         "details": res["details"], "rvol": rv})
-            return coin
+                # ✅ v4.0 — احسب قوة السير + VIP status للإشارة
+                flow = calc_volume_flow_strength(candles)
+                is_vip, vip_checks = evaluate_vip_status(candles, flow)
+                coin.update({"score": sc, "reasons": res["reasons"],
+                             "details": details, "rvol": rv,
+                             "flow": flow, "is_vip": is_vip, "vip_checks": vip_checks})
+                return coin
 
-        tasks   = [analyze(c) for c in candidates[:80]]
+        # ✅ v4.1 — تشغيل التحليل على كل العملات (مع semaphore داخلي)
+        tasks   = [analyze(c) for c in candidates]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     signals = [r for r in results if r and not isinstance(r, Exception)]
@@ -993,8 +1504,9 @@ async def check_signals(bot: Bot, target_chat: int = None):
         sym = c["symbol"]
         if sym in seen_signals:
             elapsed = datetime.now() - seen_signals[sym]
-            if elapsed.total_seconds() < 86400:
-                logger.info(f"تخطي {sym} — إشارة مكررة")
+            # ✅ v3.2: cooldown 6 ساعات بدل 24 (السكان أصبح مستمر)
+            if elapsed.total_seconds() < SIGNAL_COOLDOWN_HOURS * 3600:
+                logger.info(f"تخطي {sym} — إشارة مكررة (cooldown {SIGNAL_COOLDOWN_HOURS}h)")
                 continue
         fresh_signals.append(c)
 
@@ -1031,103 +1543,75 @@ async def check_signals(bot: Bot, target_chat: int = None):
         sc    = c.get("score",0)
         rv    = c.get("rvol",1.0)
         dt    = c.get("details",{})
+        conf  = dt.get("confluence", {})
+        flow  = c.get("flow")
+        is_vip = c.get("is_vip", False)
         arrow = "🟢" if pc > 0 else "🔴"
+        vip_badge = " 💎 VIP" if is_vip else ""
 
         if sc >= 95:   strength = "🔥🔥🔥 ممتازة"
         elif sc >= 90: strength = "🔥🔥 قوية جداً"
         elif sc >= 85: strength = "🔥 قوية"
         else:          strength = "✨ جيدة (80+)"
 
-        # ════════════ ✅ ترتيب الشروط رأسياً تحت بعض ════════════
+        # ════════════ ✅ v4.0 — إشارة منظمة بالمحركات الثلاثة ════════════
         lines = []
-        lines.append(f"{arrow} {c['symbol']} — {escape_md(c['name'])}")
+        lines.append(f"{arrow} {c['symbol']}{vip_badge} — {escape_md(c['name'])}")
         lines.append(f"━━━━━━━━━━━━━━━━━━━━")
         lines.append(f"💵 السعر: {fmt_price(c['price'])}  ({pc:+.1f}%)")
         lines.append(f"⏱ 1h: {p1h:+.2f}%  |  7d: {c['price_change_7d']:+.1f}%")
         lines.append(f"🎯 النقاط: {sc}/100  —  {strength}")
+        engines = conf.get("engines_passed", 0)
+        lines.append(f"⚙️  محركات الـ Confluence: {engines}/3 ✅")
         lines.append("")
-        lines.append("📊 بيانات السيولة:")
+
+        # ═══ المحركات الثلاثة (الجزء الأهم) ═══
+        lines.append("🔥 محركات الإشارة:")
+        # محرك 1 - Momentum
+        mom = conf.get("momentum", {})
+        mom_icon = "✅" if mom.get("pass") else "❌"
+        lines.append(f"   {mom_icon} Momentum ({mom.get('score',0)}/3) — RSI+MACD+Stoch")
+        if mom.get("rsi") is not None:
+            lines.append(f"      └ RSI: {mom['rsi']}  |  Stoch K: {mom.get('stoch_k','—')}")
+        # محرك 2 - Smart Money
+        sm = conf.get("smart", {})
+        sm_icon = "✅" if sm.get("pass") else "❌"
+        lines.append(f"   {sm_icon} Smart Money ({sm.get('score',0)}/4) — CVD+OF+Wyckoff+SM")
+        # محرك 3 - Breakout
+        br = conf.get("breakout", {})
+        br_icon = "✅" if br.get("pass") else "❌"
+        lines.append(f"   {br_icon} Breakout ({br.get('score',0)}/4) — Squeeze+Surge+MA+HL")
+        lines.append("")
+
+        # ═══ السيولة الشرائية ═══
+        lines.append("📊 السيولة الشرائية:")
         lines.append(f"   • RVOL: {rv:.2f}x")
         lines.append(f"   • فوليم 24h: {fmt_vol(c['volume_24h'])}")
         lines.append(f"   • زيادة الفوليم: {vc:+.0f}%")
+        if flow:
+            label, _ = classify_flow_strength(flow["score"])
+            lines.append(f"   • قوة سير الشراء: {flow['score']:.0f}%  {label}")
+            lines.append(f"   • هيمنة الشراء: {flow['buy_dominance']:.0f}%")
         if dt.get("vol_surge"):
             lines.append(f"   • قفزة فوليم: {dt.get('surge_ratio',0):.1f}x ⚡")
         lines.append("")
 
-        # ✅ المؤشرات المتطورة - كل واحدة في سطر منفصل
-        lines.append("🔬 المؤشرات المتطورة:")
-        advanced_count = 0
-        if dt.get("rsi_div"):
-            lines.append("   ✅ تباعد RSI إيجابي (Bullish Divergence)")
-            advanced_count += 1
-        if dt.get("cvd_pos"):
-            lines.append("   ✅ CVD صاعد - تجميع شراء")
-            advanced_count += 1
-        if dt.get("order_flow"):
-            bp = dt.get("buy_pressure", 0) * 100
-            lines.append(f"   ✅ ضغط شراء {bp:.0f}% (Order Flow)")
-            advanced_count += 1
-        if dt.get("wyckoff"):
-            lines.append("   ✅ نمط Wyckoff Accumulation 🏗️")
-            advanced_count += 1
-        if dt.get("smart_money"):
-            lines.append("   ✅ بصمة Smart Money 💎")
-            advanced_count += 1
-        if dt.get("liq_grab"):
-            lines.append("   ✅ Liquidity Grab + ارتداد")
-            advanced_count += 1
-        if dt.get("ema_cross"):
-            lines.append("   ✅ EMA 9/21 Bullish Cross")
-            advanced_count += 1
+        # ═══ علامة VIP (لو متاحة) ═══
+        if is_vip:
+            lines.append("💎 معايير VIP المُحققة:")
+            for name, ok in c.get("vip_checks", []):
+                lines.append(f"   ✅ {name}")
+            lines.append("")
 
-        if advanced_count == 0:
-            lines.append("   لا توجد مؤشرات متطورة مفعّلة")
-        lines.append("")
-
-        # ✅ Price Action - كل واحدة في سطر منفصل
-        lines.append("📈 Price Action:")
-        pa_count = 0
-        if dt.get("squeeze"):
-            lines.append(f"   • Bollinger Squeeze ({dt.get('bb_width', 0):.1f}%) 🎯")
-            pa_count += 1
-        elif dt.get("bb_width", 999) < 8:
-            lines.append(f"   • Bollinger ضيق ({dt.get('bb_width', 0):.1f}%)")
-            pa_count += 1
-        if dt.get("breakout"):
-            lines.append("   • اختراق مقاومة (Breakout)")
-            pa_count += 1
-        if dt.get("absorption"):
-            lines.append("   • امتصاص بيع")
-            pa_count += 1
-        if dt.get("higher_lows"):
-            lines.append("   • Higher Lows صاعد")
-            pa_count += 1
-        if dt.get("above_ma"):
-            lines.append("   • سعر فوق MA20")
-            pa_count += 1
-        if dt.get("vwap_cross"):
-            lines.append("   • اختراق VWAP")
-            pa_count += 1
-        if dt.get("dec_sell"):
-            lines.append("   • ضغط بيع ينخفض")
-            pa_count += 1
-        if dt.get("candle_grow"):
-            lines.append("   • شموع شراء تتضخم")
-            pa_count += 1
-        if dt.get("sideways"):
-            lines.append("   • نطاق Sideways")
-            pa_count += 1
-
-        if pa_count == 0:
-            lines.append("   لا توجد إشارات Price Action")
-        lines.append("")
-
+        # ═══ معلومات السوق ═══
         lines.append("ℹ️ معلومات السوق:")
         lines.append(f"   • عدد المنصات: {c['num_market_pairs']}")
         lines.append(f"   • CMC Rank: #{c['rank']}")
         lines.append("")
         lines.append(f"🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{c['symbol']}_USDT")
-        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
+        lines.append(f"💡 /coin {c['symbol']} للتحليل الشامل")
+        lines.append(f"📊 /check {c['symbol']} لتقييم القوة")
 
         try:
             await bot.send_message(
@@ -1304,69 +1788,288 @@ async def get_vol(symbol: str) -> str:
 # /coin — تحليل شامل بكل المؤشرات
 # ============================================================
 async def get_coin_analysis(symbol: str) -> str:
+    """
+    ✅ v4.0 — تحليل شامل احترافي multi-timeframe
+    يجمع: CMC + Gate.io (1h و 4h) + كل المؤشرات + المحركات + توصية واضحة
+    """
     symbol = symbol.upper().strip()
     async with aiohttp.ClientSession() as session:
         coin = await fetch_cmc_single(session, symbol)
         if not coin:
             return f"العملة {symbol} مش موجودة في CMC"
-        d       = parse_coin(coin)
-        candles = await fetch_klines(session, symbol, limit=48)
+        d = parse_coin(coin)
+        # ✅ multi-timeframe
+        candles_1h = await fetch_klines(session, symbol, interval="1h", limit=72)
+        candles_4h = await fetch_klines(session, symbol, interval="4h", limit=42)
 
         arrow = "🟢" if d["price_change_24h"] > 0 else "🔴"
         lines = [
-            f"🔍 تحليل {symbol} — {escape_md(d['name'])}",
+            f"📋 التحليل الشامل — {symbol}",
+            f"   ({escape_md(d['name'])})",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"{arrow} السعر: {fmt_price(d['price'])}  ({d['price_change_24h']:+.2f}%)",
-            f"⏱ 1h: {d['price_change_1h']:+.2f}%  |  7d: {d['price_change_7d']:+.1f}%",
             f"",
-            f"💰 حجم التداول 24h: {fmt_vol(d['volume_24h'])}  ({d['volume_change']:+.0f}%)",
-            f"🌐 المنصات: {d['num_market_pairs']}  |  Market Cap: {fmt_vol(d['market_cap'])}",
-            f"📊 رانك CMC: #{d['rank']}",
+            f"💵 السعر الحالي",
+            f"   {arrow} {fmt_price(d['price'])}",
+            f"   • 24h:  {d['price_change_24h']:+.2f}%",
+            f"   • 1h :  {d['price_change_1h']:+.2f}%",
+            f"   • 7d :  {d['price_change_7d']:+.2f}%",
+            f"",
+            f"📊 معلومات السوق",
+            f"   • فوليم 24h:   {fmt_vol(d['volume_24h'])}  ({d['volume_change']:+.0f}%)",
+            f"   • Market Cap: {fmt_vol(d['market_cap'])}",
+            f"   • CMC Rank:   #{d['rank']}",
+            f"   • المنصات:    {d['num_market_pairs']}",
             f"",
         ]
-        if candles and len(candles) >= 10:
-            res = score_coin(candles, d)
-            sc  = res["score"]
-            rs  = res["reasons"]
-            dt  = res["details"]
 
-            lines.append(f"🎯 نقاط الإشارة: {sc}/100")
-            if sc >= MIN_SCORE:
-                lines.append(f"   🚀 إشارة قوية! (>= {MIN_SCORE})")
+        # ═══════ التحليل الفني الشامل ═══════
+        if candles_1h and len(candles_1h) >= 30:
+            res = score_coin(candles_1h, d)
+            sc  = res["score"]
+            dt  = res["details"]
+            conf = dt.get("confluence", {})
+            flow = calc_volume_flow_strength(candles_1h)
+            is_vip, vip_checks = evaluate_vip_status(candles_1h, flow)
+
+            # ═══ الحكم الإجمالي ═══
+            engines = conf.get("engines_passed", 0)
+            lines.append(f"🎯 الحكم الإجمالي")
+            lines.append(f"   • النقاط: {sc}/100")
+            lines.append(f"   • محركات الـ Confluence: {engines}/3")
+            if sc >= MIN_SCORE and engines >= CONFLUENCE_ENGINES_REQ:
+                verdict = "🚀 إشارة مؤكدة — قابلة للإرسال"
+            elif sc >= MIN_SCORE:
+                verdict = "⚠️ نقاط جيدة لكن المحركات ضعيفة"
+            elif engines >= CONFLUENCE_ENGINES_REQ:
+                verdict = "⚠️ محركات جيدة لكن النقاط أقل من 80"
+            elif sc >= 60:
+                verdict = "👁 تستحق المراقبة"
             else:
-                lines.append(f"   😴 لا إشارة بعد (< {MIN_SCORE})")
+                verdict = "😴 لا توجد إشارة"
+            lines.append(f"   • التقييم: {verdict}")
+            if is_vip:
+                lines.append(f"   • 💎 VIP — سيولة شراء مستمرة")
             lines.append("")
 
-            lines.append("📈 المؤشرات الأساسية:")
-            lines.append(f"   • RVOL: {dt['rvol']:.2f}x  {'✅' if dt['rvol']>=MIN_RVOL else '⚠️'}")
-            lines.append(f"   • قفزة فوليم: {'✅ ' + str(round(dt['surge_ratio'],1)) + 'x' if dt['vol_surge'] else '❌'}")
-            lines.append(f"   • Bollinger: {dt['bb_width']:.1f}%  {'🔴 Squeeze!' if dt['squeeze'] else ''}")
+            # ═══ المحركات الثلاثة بالتفصيل ═══
+            lines.append("⚙️ محركات الـ Confluence (تفاصيل)")
+            for engine_name, engine_key, total in [
+                ("Momentum",    "momentum", 3),
+                ("Smart Money", "smart",    4),
+                ("Breakout",    "breakout", 4),
+            ]:
+                e = conf.get(engine_key, {})
+                icon = "✅" if e.get("pass") else "❌"
+                lines.append(f"   {icon} {engine_name} ({e.get('score',0)}/{total})")
+                for nm, ok in e.get("checks", []):
+                    sub_icon = "✓" if ok else "✗"
+                    lines.append(f"      {sub_icon} {nm}")
+            lines.append("")
+
+            # ═══ المؤشرات الفنية ═══
+            mom = conf.get("momentum", {})
+            lines.append("📈 مؤشرات الزخم")
+            if mom.get("rsi") is not None:
+                rsi = mom["rsi"]
+                rsi_state = "🔴 oversold" if rsi < 30 else "🟡 محايد" if rsi < 60 else "🟢 صاعد" if rsi < 70 else "🔥 مشتعل/overbought"
+                lines.append(f"   • RSI(14): {rsi:.1f}  {rsi_state}")
+            if mom.get("stoch_k") is not None:
+                lines.append(f"   • Stochastic %K: {mom['stoch_k']:.1f}")
+            if mom.get("macd_hist") is not None:
+                macd_state = "🟢 موجب" if mom["macd_hist"] > 0 else "🔴 سالب"
+                lines.append(f"   • MACD Histogram: {mom['macd_hist']:.4f}  {macd_state}")
+            lines.append("")
+
+            # ═══ السيولة الشرائية ═══
+            lines.append("💧 السيولة الشرائية")
+            lines.append(f"   • RVOL: {dt['rvol']:.2f}x")
+            if dt.get("vol_surge"):
+                lines.append(f"   • قفزة فوليم: {dt.get('surge_ratio',0):.1f}x ⚡")
+            if flow:
+                label, _ = classify_flow_strength(flow["score"])
+                lines.append(f"   • قوة سير الشراء: {flow['score']:.0f}%  {label}")
+                lines.append(f"   • هيمنة الشراء: {flow['buy_dominance']:.0f}%")
+                lines.append(f"      └ لحظي: {flow['instant']:.0f}%  |  اتجاه: {flow['trend']:.0f}%  |  تسارع: {flow['accel']:.0f}%")
+            lines.append("")
+
+            # ═══ Price Action ═══
+            lines.append("🎨 Price Action")
+            lines.append(f"   • Bollinger Width: {dt['bb_width']:.2f}%  " +
+                         ("🎯 Squeeze!" if dt['squeeze'] else ("ضيق" if dt['bb_width']<8 else "")))
             lines.append(f"   • Breakout: {'✅' if dt['breakout'] else '❌'}")
             lines.append(f"   • Higher Lows: {'✅' if dt['higher_lows'] else '❌'}")
             lines.append(f"   • فوق MA20: {'✅' if dt['above_ma'] else '❌'}")
+            lines.append(f"   • VWAP Cross: {'✅' if dt['vwap_cross'] else '❌'}")
+            lines.append(f"   • Sideways/تجميع: {'✅' if dt['sideways'] else '❌'}")
             lines.append("")
 
-            lines.append("🔬 المؤشرات المتطورة:")
-            lines.append(f"   • RSI Divergence: {'✅ إيجابي' if dt['rsi_div'] else '❌'}")
-            lines.append(f"   • CVD (ضغط الشراء): {'✅ صاعد' if dt['cvd_pos'] else '❌'}")
+            # ═══ Smart Money Footprints ═══
+            lines.append("💎 بصمات المال الذكي")
+            lines.append(f"   • CVD (تجميع شراء): {'✅' if dt['cvd_pos'] else '❌'}")
             lines.append(f"   • Order Flow: {'✅ ' + str(int(dt['buy_pressure']*100)) + '%' if dt['order_flow'] else '❌'}")
             lines.append(f"   • Wyckoff Accumulation: {'✅' if dt['wyckoff'] else '❌'}")
-            lines.append(f"   • Smart Money: {'✅' if dt['smart_money'] else '❌'}")
+            lines.append(f"   • Smart Money Footprint: {'✅' if dt['smart_money'] else '❌'}")
             lines.append(f"   • Liquidity Grab: {'✅' if dt['liq_grab'] else '❌'}")
+            lines.append(f"   • RSI Divergence: {'✅' if dt['rsi_div'] else '❌'}")
             lines.append(f"   • EMA 9/21 Cross: {'✅' if dt['ema_cross'] else '❌'}")
-            lines.append(f"   • VWAP Cross: {'✅' if dt['vwap_cross'] else '❌'}")
+            lines.append(f"   • امتصاص بيع: {'✅' if dt['absorption'] else '❌'}")
             lines.append("")
 
-            if rs:
-                lines.append("✨ الإيجابيات المكتشفة:")
-                for r in rs[:10]:
-                    lines.append(f"   • {r}")
+            # ═══ تحليل الـ 4h ═══
+            if candles_4h and len(candles_4h) >= 26:
+                res4h = score_coin(candles_4h, d)
+                conf4h = res4h["details"].get("confluence", {})
+                lines.append("⏳ التأكيد على Timeframe الـ 4h")
+                lines.append(f"   • النقاط (4h): {res4h['score']}/100")
+                lines.append(f"   • محركات (4h): {conf4h.get('engines_passed',0)}/3")
+                if conf4h.get("engines_passed", 0) >= 2 and conf.get("engines_passed", 0) >= 2:
+                    lines.append(f"   ✅ تأكيد مزدوج (1h + 4h)")
+                lines.append("")
+
+            # ═══ Velocity & Trend Quality ═══
+            velocity = calc_velocity(candles_1h)
+            tq = calc_trend_quality(candles_1h)
+            liq_depth = calc_liquidity_depth(d, candles_1h)
+            lines.append("⚡ مقاييس الحركة")
+            lines.append(f"   • سرعة الحركة: {velocity:+.2f} (ATR normalized)")
+            lines.append(f"   • جودة الاتجاه: {tq:.0f}/100")
+            lines.append(f"   • عمق السيولة: {liq_depth:.0f}/100")
+            lines.append("")
+
+            # ═══ المخاطر ═══
+            prev_pump = calc_prev_pump(candles_1h)
+            lines.append("⚠️ تقييم المخاطر")
+            if prev_pump > MAX_PREV_PUMP:
+                lines.append(f"   ❌ بامب سابق {prev_pump:.1f}% — مخاطر شراء قمة!")
+            elif prev_pump > 6:
+                lines.append(f"   ⚠️ ارتفع {prev_pump:.1f}% خلال آخر فترة")
+            else:
+                lines.append(f"   ✅ لم تشهد بامب كبير مؤخراً ({prev_pump:.1f}%)")
+            if dt['rvol'] > 5:
+                lines.append(f"   ⚠️ RVOL مرتفع جداً ({dt['rvol']:.1f}x) — احتمال نهاية موجة")
+            lines.append("")
+
+            # ═══ التوصية النهائية ═══
+            lines.append("🎯 التوصية النهائية")
+            if sc >= 85 and engines >= 2 and is_vip:
+                lines.append("   🔥🔥 إشارة قوية + VIP — تستحق دخول")
+            elif sc >= 80 and engines >= 2:
+                lines.append("   🔥 إشارة قابلة للتنفيذ")
+            elif sc >= 70 and engines >= 1:
+                lines.append("   👁 راقب — قد تتحول لإشارة")
+            elif sc >= 60:
+                lines.append("   ⏳ ضعيفة — لا تدخل الآن")
+            else:
+                lines.append("   ❌ لا توصية بالدخول")
+            lines.append("")
+
+        lines += [
+            f"🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{symbol}_USDT",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        ]
+        return "\n".join(lines)
+
+
+async def get_coin_check(symbol: str) -> str:
+    """
+    ✅ v4.0 — أمر /check
+    يعطي 4 مقاييس رئيسية:
+       💪 قوة العملة (Strength Score)
+       📐 احترام التحليل (Trend Quality / Respect)
+       💧 وجود السيولة (Liquidity Depth)
+       ⚡ سرعة الحركة (Velocity)
+    """
+    symbol = symbol.upper().strip()
+    async with aiohttp.ClientSession() as session:
+        coin = await fetch_cmc_single(session, symbol)
+        if not coin:
+            return f"العملة {symbol} مش موجودة في CMC"
+        d = parse_coin(coin)
+        candles = await fetch_klines(session, symbol, interval="1h", limit=72)
+
+        if not candles or len(candles) < 25:
+            return f"⚠️ بيانات الكلاينز غير كافية لـ {symbol} (موجودة في CMC، ربما غير مدرجة في Gate.io)"
+
+        # احسب الـ 4 مقاييس
+        res        = score_coin(candles, d)
+        strength   = res["score"]                                       # قوة العملة
+        trend_q    = calc_trend_quality(candles)                        # احترام التحليل
+        liq_depth  = calc_liquidity_depth(d, candles)                   # وجود السيولة
+        velocity   = calc_velocity(candles)                             # سرعة الحركة
+        flow       = calc_volume_flow_strength(candles)
+        is_vip, _  = evaluate_vip_status(candles, flow)
+
+        # تصنيف كل مقياس
+        def grade(score):
+            if score >= 85: return "🔥 ممتاز جداً", "very_strong"
+            if score >= 70: return "✅ قوي",        "strong"
+            if score >= 55: return "📊 متوسط",      "medium"
+            if score >= 40: return "📉 ضعيف",       "weak"
+            return                "💤 ضعيف جداً",   "very_weak"
+
+        s_lbl, _   = grade(strength)
+        t_lbl, _   = grade(trend_q)
+        l_lbl, _   = grade(liq_depth)
+        # velocity تختلف: قد تكون سالبة (نزول) أو موجبة (صعود)
+        vel_abs    = abs(velocity)
+        if vel_abs >= 2.5:   v_lbl = "⚡⚡ سريعة جداً"
+        elif vel_abs >= 1.5: v_lbl = "⚡ سريعة"
+        elif vel_abs >= 0.5: v_lbl = "🚶 متوسطة"
+        else:                v_lbl = "🐢 بطيئة"
+        v_dir = "🟢 صاعدة" if velocity > 0 else "🔴 هابطة" if velocity < 0 else "➖ ثابتة"
+
+        # الـ progress bar
+        def bar(score, width=10):
+            filled = int(score / 100 * width)
+            return "█" * filled + "░" * (width - filled)
+
+        arrow = "🟢" if d["price_change_24h"] > 0 else "🔴"
+        vip_badge = " 💎 VIP" if is_vip else ""
+
+        lines = [
+            f"📊 تقييم {symbol}{vip_badge}",
+            f"   ({escape_md(d['name'])})",
+            f"━━━━━━━━━━━━━━━━━━━━",
+            f"{arrow} السعر: {fmt_price(d['price'])}  ({d['price_change_24h']:+.2f}%)",
+            f"",
+            f"💪 قوة العملة",
+            f"   {bar(strength)} {strength}/100",
+            f"   {s_lbl}",
+            f"",
+            f"📐 احترام التحليل (Trend Quality)",
+            f"   {bar(trend_q)} {trend_q:.0f}/100",
+            f"   {t_lbl}",
+            f"   ← مدى نظافة الاتجاه: شموع فوق MA + R² + Higher Lows",
+            f"",
+            f"💧 وجود السيولة (Liquidity Depth)",
+            f"   {bar(liq_depth)} {liq_depth:.0f}/100",
+            f"   {l_lbl}",
+            f"   ← فوليم 24h + عدد منصات + استمرارية",
+            f"",
+            f"⚡ سرعة الحركة (Velocity)",
+            f"   القوة: {v_lbl}",
+            f"   الاتجاه: {v_dir}  ({velocity:+.2f} ATR)",
+            f"   ← حركة السعر مقسومة على التقلب الطبيعي",
+            f"",
+        ]
+
+        # حكم سريع
+        avg = (strength + trend_q + liq_depth + min(100, vel_abs*30)) / 4
+        if avg >= 75:
+            lines.append("🎯 الحكم السريع: 🔥 ممتازة من كل النواحي")
+        elif avg >= 60:
+            lines.append("🎯 الحكم السريع: ✅ جيدة")
+        elif avg >= 45:
+            lines.append("🎯 الحكم السريع: 📊 متوسطة")
+        else:
+            lines.append("🎯 الحكم السريع: ⚠️ ضعيفة")
 
         lines += [
             f"",
             f"🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{symbol}_USDT",
             f"━━━━━━━━━━━━━━━━━━━━",
-            f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            f"💡 /coin {symbol} للتحليل الشامل",
         ]
         return "\n".join(lines)
 
@@ -1414,22 +2117,27 @@ async def continuous_signal_scanner(bot: Bot):
     - لو ملقاش: يكمل الدورة التالية بدون رسالة
     - فاصل SIGNAL_LOOP_GAP_SECONDS بين الدورات (تخفيف الضغط على APIs)
     """
-    logger.info(f"🔄 بدء السكان المستمر — فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
-    # ننتظر قليلاً عند البدء حتى يجهز البوت
-    await asyncio.sleep(60)
+    logger.info(f"🔄 السكان المستمر — انطلاق خلال 15 ثانية... فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
+    # ✅ v3.2: ننتظر 15 ثانية فقط بدل 60 (السكان يبدأ بسرعة)
+    await asyncio.sleep(15)
 
+    cycle = 0
     while True:
         try:
+            cycle += 1
             # نتجنب التشغيل المتزامن لو حد عمل /scan في نفس اللحظة
             if job_locks["check_signals"].locked():
-                logger.info("⏸  السكان المستمر — منتظر انتهاء فحص يدوي")
+                logger.info(f"⏸  السكان المستمر [دورة {cycle}] — منتظر انتهاء فحص يدوي")
                 await asyncio.sleep(SIGNAL_LOOP_GAP_SECONDS)
                 continue
 
             async with job_locks["check_signals"]:
                 last_job_run["check_signals"] = datetime.now()
-                logger.info("🔍 دورة سكان مستمرة...")
+                t0 = datetime.now()
+                logger.info(f"🔍 دورة سكان مستمرة #{cycle} ...")
                 await check_signals(bot)
+                duration = (datetime.now() - t0).total_seconds()
+                logger.info(f"✅ دورة #{cycle} انتهت في {duration:.0f}ث — انتظار {SIGNAL_LOOP_GAP_SECONDS}ث")
 
             await asyncio.sleep(SIGNAL_LOOP_GAP_SECONDS)
 
@@ -1437,28 +2145,38 @@ async def continuous_signal_scanner(bot: Bot):
             logger.info("🛑 السكان المستمر — تم الإيقاف")
             raise
         except Exception as e:
-            logger.error(f"❌ خطأ في السكان المستمر: {e}")
+            logger.error(f"❌ خطأ في دورة #{cycle}: {e}", exc_info=True)
             await asyncio.sleep(SIGNAL_LOOP_ERR_GAP)
 
 
 # ==================== أوامر البوت ====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    src = "كل عملات Gate.io" if USE_FULL_GATE_SCAN else f"أعلى {CMC_LIMIT} في CMC"
     await update.message.reply_text(
-        "🚀 Altcoin Smart Scanner Bot v3.1\n\n"
-        "✨ الجديد في v3.1:\n"
-        "• 🔄 سكان البامب مستمر بلا توقف\n"
-        "• 📡 تقرير الفوليوم: قوي وقوي جداً فقط (≥70%)\n"
-        "• مؤشرات متطورة (RSI Div, CVD, Wyckoff, Smart Money)\n"
-        "• الحد الأدنى للإشارة: 80/100\n\n"
-        "التشغيل التلقائي:\n"
-        f"📊 تقرير الفوليوم كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
-        f"🔄 سكان Pre-Pump مستمر (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n\n"
+        "🚀 Altcoin Smart Scanner Bot v4.1\n"
+        "    — Full Gate.io + Confluence —\n\n"
+        "✨ الجديد في v4.1:\n"
+        f"• 🌐 الفحص يشمل {src}\n"
+        f"• ~1500-2500 عملة بدل 500\n"
+        f"• فلتر أولي: فوليوم ≥ ${GATE_MIN_VOLUME_USD/1000:.0f}K\n"
+        f"• {GATE_PARALLEL_LIMIT} طلبات متوازية\n\n"
+        "⚙️ 3 محركات Confluence (≥ 2/3):\n"
+        "   • Momentum (RSI+MACD+Stoch)\n"
+        "   • Smart Money (CVD+OF+Wyckoff+SM)\n"
+        "   • Breakout (Squeeze+Surge+MA+HL)\n\n"
+        "🔄 سكان البامب: مستمر بلا توقف\n"
+        f"   فاصل {SIGNAL_LOOP_GAP_SECONDS}ث | حد ≥ {MIN_SCORE}\n\n"
+        "📊 تقرير الفوليوم:\n"
+        f"   كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
+        f"   شراء فقط + قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%\n"
+        "   💎 VIP يُرتّب أولاً\n\n"
         "الأوامر:\n"
-        "/report  — تقرير فوري لقوة السير\n"
+        "/report  — تقرير فوري للسير الشرائي\n"
         "/scan    — فحص الإشارات الآن\n"
-        "/info ETH — توكنوميكس\n"
-        "/vol ETH — حجم تداول\n"
-        "/coin ETH — تحليل كامل بكل المؤشرات\n"
+        "/coin SYMBOL  — تحليل شامل احترافي\n"
+        "/check SYMBOL — تقييم سريع (قوة/تحليل/سيولة/سرعة)\n"
+        "/info SYMBOL  — توكنوميكس\n"
+        "/vol SYMBOL   — حجم تداول\n"
         "/top     — أفضل 5 إشارات\n"
         "/status  — حالة البوت\n"
         "/chatid  — معرفة الـ Chat ID"
@@ -1493,8 +2211,26 @@ async def cmd_coin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("استخدم: /coin اسم_العملة\nمثال: /coin ETH")
         return
-    await update.message.reply_text(f"🔍 جاري تحليل {context.args[0].upper()}...")
+    await update.message.reply_text(f"🔍 جاري التحليل الشامل لـ {context.args[0].upper()}...")
     result = await get_coin_analysis(context.args[0])
+    await update.message.reply_text(result, disable_web_page_preview=True)
+
+
+# ✅ v4.0 — أمر /check للتقييم السريع بـ 4 مقاييس
+async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text(
+            "استخدم: /check اسم_العملة\n"
+            "مثال: /check ETH\n\n"
+            "يعطيك:\n"
+            "  💪 قوة العملة\n"
+            "  📐 احترام التحليل (Trend Quality)\n"
+            "  💧 وجود السيولة\n"
+            "  ⚡ سرعة الحركة"
+        )
+        return
+    await update.message.reply_text(f"📊 جاري تقييم {context.args[0].upper()}...")
+    result = await get_coin_check(context.args[0])
     await update.message.reply_text(result, disable_web_page_preview=True)
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1510,20 +2246,41 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # حالة السكان المستمر
     scanner = context.application.bot_data.get("scanner_task")
-    scanner_status = "🔄 شغال مستمر" if (scanner and not scanner.done()) else "⛔ متوقف"
+    if scanner and not scanner.done():
+        scanner_status = "🔄 شغال مستمر"
+    elif scanner and scanner.done():
+        exc = scanner.exception() if not scanner.cancelled() else None
+        scanner_status = f"⛔ متوقف (خطأ: {exc})" if exc else "⛔ متوقف"
+    else:
+        scanner_status = "⏳ لم يبدأ بعد"
     last = last_job_run.get("check_signals")
-    last_str = last.strftime("%H:%M:%S") if last else "لم يبدأ بعد"
+    if last:
+        elapsed = (datetime.now() - last).total_seconds()
+        last_str = f"{last.strftime('%H:%M:%S')} (منذ {int(elapsed)}ث)"
+    else:
+        last_str = "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ البوت شغال — v3.1\n"
-        f"📊 تقرير الفوليوم كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
-        f"   فلتر قوة السير: ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}%\n"
+        f"✅ Altcoin Bot — v4.1 Full Gate.io\n\n"
+        f"🌐 مصدر العملات:\n"
+        f"   {'كل Gate.io USDT (~1500-2500)' if USE_FULL_GATE_SCAN else f'CMC top {CMC_LIMIT}'}\n"
+        f"   فلتر أولي: فوليم ≥ ${GATE_MIN_VOLUME_USD/1000:.0f}K\n"
+        f"   توازي: {GATE_PARALLEL_LIMIT} طلب\n\n"
+        f"📊 تقرير الفوليوم:\n"
+        f"   كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
+        f"   شراء ≥ {MIN_BUY_DOMINANCE:.0f}% + قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}%\n"
+        f"   💎 VIP يُرتّب أولاً\n\n"
         f"🔍 سكان البامب: {scanner_status}\n"
-        f"   فاصل بين الدورات: {SIGNAL_LOOP_GAP_SECONDS}ث\n"
+        f"   فاصل: {SIGNAL_LOOP_GAP_SECONDS}ث\n"
         f"   آخر دورة: {last_str}\n"
-        f"   حد الإشارة: score ≥ {MIN_SCORE}\n"
-        f"🔬 17 مؤشر متطور\n"
-        f"📡 CMC + Gate.io\n"
-        f"🔔 الإرسال: الأدمن فقط (مع lock ضد الإرسال المزدوج)"
+        f"   حد الإشارة: ≥ {MIN_SCORE}\n"
+        f"   محركات Confluence: ≥ {CONFLUENCE_ENGINES_REQ}/3\n"
+        f"   Cooldown: {SIGNAL_COOLDOWN_HOURS}h\n\n"
+        f"⚙️ 3 محركات Confluence:\n"
+        f"   • Momentum: RSI+MACD+Stoch (3/3)\n"
+        f"   • Smart Money: CVD+OF+Wyckoff+SM (3/4)\n"
+        f"   • Breakout: Squeeze+Surge+MA+HL (3/4)\n\n"
+        f"📡 Gate.io + CMC (1h + 4h)\n"
+        f"🔒 Lock نشط ضد الإرسال المزدوج"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1533,10 +2290,28 @@ async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ✅ post_init hook لبدء السكان المستمر في الخلفية بعد جاهزية البوت
 async def _post_init(app: Application):
     # نشغل السكان المستمر كـ background task
-    app.bot_data["scanner_task"] = asyncio.create_task(
-        continuous_signal_scanner(app.bot)
-    )
+    task = asyncio.create_task(continuous_signal_scanner(app.bot))
+    app.bot_data["scanner_task"] = task
+    logger.info("=" * 50)
     logger.info("✅ تم تشغيل السكان المستمر في الخلفية")
+    logger.info(f"   فاصل بين الدورات: {SIGNAL_LOOP_GAP_SECONDS}ث")
+    logger.info(f"   حد الإشارة: score ≥ {MIN_SCORE}")
+    logger.info(f"   Cooldown للعملة الواحدة: {SIGNAL_COOLDOWN_HOURS} ساعات")
+    logger.info("=" * 50)
+    # تنبيه الأدمن إن البوت بدأ
+    try:
+        await app.bot.send_message(
+            chat_id=int(ADMIN_CHAT_ID),
+            text=(
+                "🟢 *البوت بدأ التشغيل*\n"
+                f"🔄 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
+                f"📊 تقرير الفوليوم: كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
+                f"🎯 الفلتر: شراء ≥ {MIN_BUY_DOMINANCE:.0f}% + قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}%"
+            ),
+            parse_mode="Markdown",
+        )
+    except Exception as e:
+        logger.warning(f"لم نستطع إرسال رسالة البدء: {e}")
 
 
 async def _post_shutdown(app: Application):
@@ -1569,6 +2344,7 @@ def main():
     app.add_handler(CommandHandler("vol",     cmd_vol))
     app.add_handler(CommandHandler("info",    cmd_info))
     app.add_handler(CommandHandler("coin",    cmd_coin))
+    app.add_handler(CommandHandler("check",   cmd_check))   # ✅ v4.0
     app.add_handler(CommandHandler("top",     cmd_top))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("chatid",  cmd_chatid))
@@ -1591,14 +2367,20 @@ def main():
     )
 
     print("="*60)
-    print("🚀 Altcoin Smart Scanner Bot v3.1 - Continuous Edition")
-    print(f"📊 تقرير زيادة السيولة كل {SCAN_INTERVAL_MINUTES} دقيقة")
-    print(f"   فلتر قوة السير: >= {MIN_FLOW_SCORE_FOR_REPORT:.0f}% (قوي/قوي جداً فقط)")
-    print(f"🔄 سكان البامب: مستمر بلا توقف (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)")
+    print("🚀 Altcoin Smart Scanner Bot v4.1 - Full Gate.io")
+    src = "كل Gate.io USDT" if USE_FULL_GATE_SCAN else f"CMC top {CMC_LIMIT}"
+    print(f"🌐 المصدر: {src}")
+    print(f"   فلتر أولي: فوليم ≥ ${GATE_MIN_VOLUME_USD/1000:.0f}K")
+    print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
+    print(f"📊 تقرير الفوليوم كل {SCAN_INTERVAL_MINUTES//60} ساعات (شرائي فقط)")
+    print(f"   الفلتر: قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%")
+    print(f"   💎 VIP يُرتّب أولاً")
+    print(f"🔄 سكان البامب: مستمر (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)")
     print(f"   حد الإشارة: score >= {MIN_SCORE}")
-    print(f"🔬 17 مؤشر تقني متطور")
+    print(f"   محركات Confluence: >= {CONFLUENCE_ENGINES_REQ}/3")
+    print(f"⚙️  3 محركات: Momentum + Smart Money + Breakout")
+    print(f"📋 /coin = تحليل شامل  |  /check = تقييم سريع")
     print(f"🔒 Lock نشط ضد الإرسال المزدوج")
-    print(f"🔔 الإرسال: الأدمن فقط")
     print("="*60)
 
     app.run_polling(drop_pending_updates=True)
