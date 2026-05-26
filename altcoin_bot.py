@@ -52,35 +52,73 @@ GATE_MIN_VOLUME_USD       = 500_000    # تجاهل عملات بفوليوم أ
 GATE_MAX_CANDIDATES       = 1500       # سقف عدد العملات في الفحص الواحد
 GATE_PARALLEL_LIMIT       = 25         # طلبات كلاينز متوازية (زدناها لـ 25)
 
-# ==================== ✅ نظام النقاط المتطور (مجموع = 130 → mapped to 100) ====================
-SCORE_RVOL              = 15
-SCORE_VOL_SURGE         = 12
-SCORE_VOL_TREND         = 5
-SCORE_BB_SQUEEZE        = 12
-SCORE_SIDEWAYS          = 5
-SCORE_BREAKOUT          = 12
-SCORE_ABSORPTION        = 8
-SCORE_HIGHER_LOWS       = 6
-SCORE_ABOVE_MA          = 5
-# ✅ مؤشرات متطورة جديدة
-SCORE_RSI_DIVERGENCE    = 12
-SCORE_CVD_POSITIVE      = 10
-SCORE_ORDER_FLOW        = 10
-SCORE_WYCKOFF           = 10
-SCORE_SMART_MONEY       = 10
-SCORE_LIQUIDITY_GRAB    = 8
-SCORE_EMA_CROSS         = 7
-SCORE_VWAP_CROSS        = 5
-SCORE_DEC_SELL          = 4
-SCORE_CANDLE_GROWTH     = 4
+# ════════════════════════════════════════════════════════════════════
+# ✅ v5.0 — PUMP DETECTION SYSTEM (8 شروط من ملف prompt — Gate.io)
+# ════════════════════════════════════════════════════════════════════
+# الشرط الأصلي على Binance: Top 50 Futures
+# عندنا على Gate.io: كل عملات USDT بفوليم ≥ MIN_VOL_FOR_SIGNAL
+#
+# الشروط 1, 2, 4, 5, 6, 7 منفذة بدقة
+# الشرط 3 (Spoofing) ملغى — يحتاج WebSocket
+# الشرط 8 (Liquidation) مستبدل بـ Liquidity Sweep Detection من الكلاينز
+# ════════════════════════════════════════════════════════════════════
 
-# ✅ v4.0 — Confluence Engine
-# المحركات الثلاثة + شرط 2/3 على الأقل لإرسال الإشارة
-CONFLUENCE_MOMENTUM_REQ  = 3   # RSI Recovery + MACD + Stoch  (3/3 لاجتياز Momentum)
-CONFLUENCE_SMART_REQ     = 3   # CVD + OF + Wyckoff + Smart   (3/4 لاجتياز Smart Money)
-CONFLUENCE_BREAKOUT_REQ  = 3   # Squeeze + Surge + Above MA + HL (3/4 لاجتياز Breakout)
-CONFLUENCE_ENGINES_REQ   = 2   # كم محرك لازم يعطي ✅ (2/3)
-SCORE_CONFLUENCE_BONUS   = 8   # نقاط إضافية لكل محرك ناجح
+# الأوزان (كما في الـ prompt)
+PUMP_W_FUNDING_RATE      = 3   # 1) Funding Rate Anomaly
+PUMP_W_CVD_DIVERGENCE    = 3   # 2) CVD Divergence
+# PUMP_W_SPOOFING        = 2   # 3) ⛔ ملغى (يحتاج WebSocket)
+PUMP_W_TAKER_BUY_RATIO   = 2   # 4) Taker Buy Ratio
+PUMP_W_OB_IMBALANCE      = 2   # 5) Order Book Imbalance
+PUMP_W_VOLUME_ANOMALY    = 1   # 6) Volume Anomaly
+PUMP_W_WICK_ABSORPTION   = 1   # 7) Lower Wick Absorption
+PUMP_W_LIQ_SWEEP         = 2   # 8) Liquidity Sweep (بديل Liquidation Cluster)
+
+PUMP_MAX_SCORE           = 14  # 3+3+2+2+1+1+2 = 14 (كان 16 مع Spoofing)
+PUMP_SCORE_STRONG        = 10  # 🚀 STRONG (≥ 71% من الأقصى)
+PUMP_SCORE_MODERATE      = 7   # ⚠️ MODERATE (50% من الأقصى)
+PUMP_EARLY_WARNING       = True  # تفعيل Early Warning للشرط 1
+PUMP_SIGNAL_COOLDOWN_MIN = 30   # كل عملة لا تتكرر إلا بعد 30 دقيقة
+
+# عتبات الشروط
+PUMP_FUNDING_RATE_LOW    = -0.0005  # -0.05%
+PUMP_FUNDING_RATE_VLOW   = -0.0010  # -0.10%
+PUMP_CVD_CHANGE_PCT      = 15.0     # تغير CVD ≥ 15%
+PUMP_PRICE_CHANGE_PCT    = 1.0      # السعر متحرك أقل من 1%
+PUMP_TAKER_RATIO_MIN     = 0.65     # ≥ 65% taker buy
+PUMP_TAKER_PERSIST_MIN   = 3        # 3 دقائق متتالية
+PUMP_OB_IMBALANCE_MIN    = 0.75     # ≥ 75% bids
+PUMP_OB_RANGE_PCT        = 0.02     # نطاق 2%
+PUMP_VOL_ANOMALY_X       = 5.0      # 5x متوسط 7 أيام
+PUMP_VOL_ANOMALY_X2      = 3.0      # 3x لشمعتين متتاليتين
+PUMP_WICK_RATIO_MIN      = 0.6      # ذيل سفلي ≥ 60% من الشمعة
+PUMP_WICK_COUNT_MIN      = 4        # 4 من 5 شموع
+PUMP_LIQ_SWEEP_RANGE_MIN = 0.02     # 2% فوق
+PUMP_LIQ_SWEEP_RANGE_MAX = 0.05     # 5% فوق
+
+# ═══════════════════════════════════════════════════════════════
+# ✅ v5.0 — نظام الـ 15 شرط (Pro Trader System)
+# مبني على معايير المتداولين المحترفين
+# ═══════════════════════════════════════════════════════════════
+PRO_HIGH_LIQUIDITY        = 5    # 1) السيولة العالية (vol 24h ≥ $5M)
+PRO_STRONG_VOLUME         = 8    # 2) حجم تداول قوي (RVOL ≥ 2.5x)
+PRO_CLEAR_TREND           = 7    # 3) وضوح الاتجاه (EMA20>EMA50>EMA200)
+PRO_TA_RESPECT            = 6    # 4) احترام التحليل (R² ≥ 0.7)
+PRO_VOLATILITY            = 5    # 5) قوة الحركة السعرية (ATR-normalized)
+PRO_RISK_REWARD           = 7    # 6) Risk/Reward ≥ 2:1
+PRO_LIQUIDITY_INFLOW      = 8    # 7) سيولة داخلة (CVD↑ + buy_dom ≥ 60%)
+PRO_STRONG_SR             = 6    # 8) دعوم/مقاومات قوية (touch count ≥ 3)
+PRO_VOLUME_CONFIRM        = 6    # 9) تأكيد بالـ Volume (شموع خضراء + vol↑)
+PRO_MARKET_STRUCTURE      = 7    # 10) HH + HL واضحين
+PRO_BTC_ALIGNMENT         = 5    # 11) توافق مع BTC
+PRO_BREAKOUT_RETEST       = 8    # 12) Breakout أو Retest محترم
+PRO_MOMENTUM              = 6    # 13) قوة الزخم (RSI 50-70 + MACD bullish)
+PRO_LIQUIDITY_ZONES       = 5    # 14) مناطق سيولة (Equal Highs/Lows)
+PRO_TIMING                = 6    # 15) التوقيت (sideways قبل التحرك)
+PRO_MAX                   = 95   # المجموع الأقصى
+
+PRO_MIN_SCORE             = 80   # حد الإشارة
+# الشروط الإلزامية (لازم كلهم متفعلين)
+PRO_MANDATORY             = ["liquidity", "volume", "inflow", "structure"]
 # ✅ v4.0 — VIP markers
 VIP_FLOW_SCORE_MIN       = 70   # قوة سير الشراء
 VIP_BUY_DOMINANCE_MIN    = 60   # هيمنة الشراء
@@ -412,6 +450,414 @@ async def fetch_klines(session, symbol, interval="1h", limit=48):
                  "volume": float(k[1])} for k in data]
     except:
         return []
+
+
+# ════════════════════════════════════════════════════════════════════
+# ✅ v5.0 — Gate.io Pump Detection Data Fetchers
+# ════════════════════════════════════════════════════════════════════
+
+async def fetch_gate_funding_rate(session, symbol):
+    """
+    الشرط 1: Gate.io futures funding rate
+    Returns: float (e.g. -0.0012 لـ -0.12%) أو None
+    """
+    url = "https://api.gateio.ws/api/v4/futures/usdt/funding_rate"
+    params = {"contract": f"{symbol}_USDT", "limit": 1}
+    try:
+        async with session.get(url, params=params,
+                               timeout=aiohttp.ClientTimeout(total=6)) as r:
+            if r.status != 200: return None
+            data = await r.json()
+        if not data or not isinstance(data, list): return None
+        return float(data[0].get("r", 0))
+    except Exception:
+        return None
+
+
+async def fetch_gate_recent_trades(session, symbol, limit=1000):
+    """
+    شروط 2 و 4: آخر الصفقات لحساب CVD و Taker Buy Ratio
+    Gate.io: 'side' = 'buy' معناها taker buy، 'sell' = taker sell
+    """
+    url = "https://api.gateio.ws/api/v4/spot/trades"
+    params = {"currency_pair": f"{symbol}_USDT", "limit": limit}
+    try:
+        async with session.get(url, params=params,
+                               timeout=aiohttp.ClientTimeout(total=8)) as r:
+            if r.status != 200: return []
+            data = await r.json()
+        out = []
+        for t in data:
+            try:
+                out.append({
+                    "ts":     int(float(t.get("create_time_ms", 0))),
+                    "side":   t.get("side", ""),    # 'buy' = taker buy
+                    "qty":    float(t.get("amount", 0)),
+                    "price":  float(t.get("price", 0)),
+                })
+            except (ValueError, TypeError):
+                continue
+        return out
+    except Exception:
+        return []
+
+
+async def fetch_gate_orderbook(session, symbol, limit=20):
+    """
+    الشرط 5: Order Book snapshot للـ imbalance
+    """
+    url = "https://api.gateio.ws/api/v4/spot/order_book"
+    params = {"currency_pair": f"{symbol}_USDT", "limit": limit}
+    try:
+        async with session.get(url, params=params,
+                               timeout=aiohttp.ClientTimeout(total=6)) as r:
+            if r.status != 200: return None
+            data = await r.json()
+        bids = [(float(p), float(q)) for p, q in data.get("bids", [])]
+        asks = [(float(p), float(q)) for p, q in data.get("asks", [])]
+        return {"bids": bids, "asks": asks}
+    except Exception:
+        return None
+
+
+# ════════════════════════════════════════════════════════════════════
+# ✅ v5.0 — تقييم الـ 7 شروط (8 - 1 ملغى = 7)
+# ════════════════════════════════════════════════════════════════════
+
+def eval_funding_rate(funding_rate):
+    """
+    الشرط 1 — Funding Rate Anomaly (max 3 pts)
+    """
+    if funding_rate is None:
+        return {"pass": False, "score": 0, "value": None, "label": "غير متاح (spot only)"}
+    pts = 0
+    if funding_rate < PUMP_FUNDING_RATE_VLOW:
+        pts = 3
+    elif funding_rate < PUMP_FUNDING_RATE_LOW:
+        pts = 2
+    return {
+        "pass":  pts > 0,
+        "score": pts,
+        "value": funding_rate,
+        "label": f"{funding_rate*100:+.3f}%",
+    }
+
+
+def eval_cvd_divergence(trades, klines_recent):
+    """
+    الشرط 2 — CVD Divergence (max 3 pts)
+    حساب CVD من آخر الصفقات + مقارنة بتغير السعر
+    """
+    if not trades or len(trades) < 50:
+        return {"pass": False, "score": 0, "value": None, "label": "بيانات صفقات غير كافية"}
+    # نقسم الصفقات لنصفين: قديم vs حديث
+    trades.sort(key=lambda x: x["ts"])
+    mid = len(trades) // 2
+    old = trades[:mid]
+    new = trades[mid:]
+    def cvd_calc(group):
+        cv = 0
+        for t in group:
+            if t["side"] == "buy":   cv += t["qty"]
+            elif t["side"] == "sell": cv -= t["qty"]
+        return cv
+    cvd_old = cvd_calc(old)
+    cvd_new = cvd_calc(trades)  # الإجمالي
+    # نسبة التغير
+    if abs(cvd_old) < 1e-9:
+        cvd_change_pct = 100.0 if cvd_new > 0 else -100.0
+    else:
+        cvd_change_pct = (cvd_new - cvd_old) / abs(cvd_old) * 100
+    # تغير السعر بين أول وآخر صفقة
+    if old and new:
+        p_start = old[0]["price"]
+        p_end   = new[-1]["price"]
+        price_change_pct = (p_end - p_start) / p_start * 100 if p_start > 0 else 0
+    else:
+        price_change_pct = 0
+    # شرط divergence: CVD صاعد بقوة + السعر ما اتحركش كتير
+    is_divergence = (cvd_change_pct > PUMP_CVD_CHANGE_PCT and
+                     abs(price_change_pct) < PUMP_PRICE_CHANGE_PCT)
+    return {
+        "pass":  is_divergence,
+        "score": 3 if is_divergence else 0,
+        "value": cvd_change_pct,
+        "label": f"CVD {cvd_change_pct:+.1f}% / السعر {price_change_pct:+.2f}%",
+    }
+
+
+def eval_taker_buy_ratio(trades):
+    """
+    الشرط 4 — Taker Buy Ratio (max 2 pts)
+    على آخر الصفقات: نسبة taker buys للإجمالي
+    """
+    if not trades or len(trades) < 50:
+        return {"pass": False, "score": 0, "value": None, "label": "بيانات صفقات غير كافية"}
+    # نقسم لـ 3 segments (محاكاة "3 دقائق متتالية")
+    n = len(trades)
+    trades.sort(key=lambda x: x["ts"])
+    segments = [trades[i*n//3:(i+1)*n//3] for i in range(3)]
+    ratios = []
+    for seg in segments:
+        buy_qty   = sum(t["qty"] for t in seg if t["side"] == "buy")
+        total_qty = sum(t["qty"] for t in seg)
+        if total_qty > 0:
+            ratios.append(buy_qty / total_qty)
+        else:
+            ratios.append(0)
+    avg_ratio    = sum(ratios) / len(ratios) if ratios else 0
+    all_above    = all(r > PUMP_TAKER_RATIO_MIN for r in ratios)
+    return {
+        "pass":  all_above,
+        "score": 2 if all_above else 0,
+        "value": avg_ratio,
+        "label": f"{avg_ratio*100:.1f}% (آخر 3 شرائح)",
+    }
+
+
+def eval_orderbook_imbalance(ob, current_price):
+    """
+    الشرط 5 — Order Book Imbalance (max 2 pts)
+    """
+    if not ob or not ob.get("bids") or not ob.get("asks") or current_price <= 0:
+        return {"pass": False, "score": 0, "value": None, "label": "order book غير متاح"}
+    p_min = current_price * (1 - PUMP_OB_RANGE_PCT)
+    p_max = current_price * (1 + PUMP_OB_RANGE_PCT)
+    buy_vol  = sum(q for p, q in ob["bids"] if p >= p_min)
+    sell_vol = sum(q for p, q in ob["asks"] if p <= p_max)
+    total = buy_vol + sell_vol
+    if total <= 0:
+        return {"pass": False, "score": 0, "value": None, "label": "لا توجد سيولة قريبة"}
+    imbalance = buy_vol / total
+    is_strong = imbalance > PUMP_OB_IMBALANCE_MIN
+    return {
+        "pass":  is_strong,
+        "score": 2 if is_strong else 0,
+        "value": imbalance,
+        "label": f"شراء {imbalance*100:.1f}% (نطاق ±2%)",
+    }
+
+
+def eval_volume_anomaly(candles_15m):
+    """
+    الشرط 6 — Volume Anomaly (max 1 pt)
+    OHLCV 15-min على آخر 7 أيام
+    """
+    if not candles_15m or len(candles_15m) < 50:
+        return {"pass": False, "score": 0, "value": None, "label": "كلاينز غير كافية"}
+    vols = [c["volume"] for c in candles_15m]
+    avg_7d = sum(vols[:-2]) / max(1, len(vols) - 2)
+    if avg_7d <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "متوسط صفر"}
+    curr = vols[-1]
+    prev = vols[-2]
+    ratio_curr = curr / avg_7d
+    ratio_prev = prev / avg_7d
+    if ratio_curr > PUMP_VOL_ANOMALY_X:
+        return {"pass": True, "score": 1, "value": ratio_curr,
+                "label": f"{ratio_curr:.1f}x متوسط 7 أيام 🔥"}
+    if ratio_curr > PUMP_VOL_ANOMALY_X2 and ratio_prev > PUMP_VOL_ANOMALY_X2:
+        return {"pass": True, "score": 1, "value": ratio_curr,
+                "label": f"شمعتين متتاليتين {ratio_curr:.1f}x و {ratio_prev:.1f}x"}
+    return {"pass": False, "score": 0, "value": ratio_curr,
+            "label": f"{ratio_curr:.1f}x (الحد {PUMP_VOL_ANOMALY_X}x)"}
+
+
+def eval_wick_absorption(candles_1m):
+    """
+    الشرط 7 — Lower Wick Absorption (max 1 pt)
+    آخر 5 شموع دقيقة: لو ≥ 4 منها فيها ذيل سفلي كبير + إغلاق فوق المنتصف
+    """
+    if not candles_1m or len(candles_1m) < 5:
+        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 1m غير كافية"}
+    last5 = candles_1m[-5:]
+    count = 0
+    for c in last5:
+        rng = c["high"] - c["low"]
+        if rng <= 0: continue
+        lower_wick = min(c["open"], c["close"]) - c["low"]
+        wick_ratio = lower_wick / rng
+        mid = c["low"] + rng / 2
+        if wick_ratio > PUMP_WICK_RATIO_MIN and c["close"] > mid:
+            count += 1
+    is_pass = count >= PUMP_WICK_COUNT_MIN
+    return {
+        "pass":  is_pass,
+        "score": 1 if is_pass else 0,
+        "value": count,
+        "label": f"{count}/5 شموع امتصاص",
+    }
+
+
+def eval_liquidity_sweep(candles_1h, current_price):
+    """
+    الشرط 8 — بديل Liquidation Cluster
+    نبحث عن pivot highs (قمم تاريخية) في نطاق 2-5% فوق السعر الحالي
+    لو وُجدت قمم متعددة قريبة، فهي مستويات سيولة (stop losses لـ shorts)
+    """
+    if not candles_1h or len(candles_1h) < 30 or current_price <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 1h غير كافية"}
+    p_min = current_price * (1 + PUMP_LIQ_SWEEP_RANGE_MIN)
+    p_max = current_price * (1 + PUMP_LIQ_SWEEP_RANGE_MAX)
+    # نجد pivot highs (شمعة أعلى من 3 قبلها و 3 بعدها)
+    pivots = []
+    for i in range(3, len(candles_1h) - 3):
+        h = candles_1h[i]["high"]
+        if (h > max(c["high"] for c in candles_1h[i-3:i]) and
+            h > max(c["high"] for c in candles_1h[i+1:i+4])):
+            pivots.append(h)
+    # كم pivot في النطاق؟
+    in_range = [p for p in pivots if p_min <= p <= p_max]
+    cluster_strength = len(in_range)
+    if cluster_strength >= 3:
+        return {"pass": True, "score": 2, "value": cluster_strength,
+                "label": f"{cluster_strength} قمم في النطاق +2% إلى +5% 🎯"}
+    if cluster_strength >= 2:
+        return {"pass": True, "score": 1, "value": cluster_strength,
+                "label": f"{cluster_strength} قمم — cluster متوسط"}
+    return {"pass": False, "score": 0, "value": cluster_strength,
+            "label": "لا توجد قمم سيولة قريبة"}
+
+
+# ════════════════════════════════════════════════════════════════════
+# ✅ v5.0 — المحرك الرئيسي للبامب
+# ════════════════════════════════════════════════════════════════════
+
+async def evaluate_pump_signal(session, symbol, current_price):
+    """
+    يقيم الـ 7 شروط على عملة واحدة ويرجع النتيجة الكاملة
+    """
+    # نجلب كل البيانات بالتوازي لتوفير الوقت
+    funding_task   = fetch_gate_funding_rate(session, symbol)
+    trades_task    = fetch_gate_recent_trades(session, symbol, limit=1000)
+    ob_task        = fetch_gate_orderbook(session, symbol, limit=20)
+    klines_15m_task = fetch_klines(session, symbol, interval="15m", limit=200)
+    klines_1m_task  = fetch_klines(session, symbol, interval="1m",  limit=10)
+    klines_1h_task  = fetch_klines(session, symbol, interval="1h",  limit=72)
+
+    funding, trades, ob, kl15, kl1, kl1h = await asyncio.gather(
+        funding_task, trades_task, ob_task,
+        klines_15m_task, klines_1m_task, klines_1h_task,
+        return_exceptions=True
+    )
+    # تحويل أي exception لـ None
+    if isinstance(funding, Exception): funding = None
+    if isinstance(trades, Exception):  trades  = []
+    if isinstance(ob, Exception):      ob      = None
+    if isinstance(kl15, Exception):    kl15    = []
+    if isinstance(kl1, Exception):     kl1     = []
+    if isinstance(kl1h, Exception):    kl1h    = []
+
+    # تقييم الـ 7 شروط
+    r1 = eval_funding_rate(funding)
+    r2 = eval_cvd_divergence(trades, kl15)
+    # r3 ملغى
+    r4 = eval_taker_buy_ratio(trades)
+    r5 = eval_orderbook_imbalance(ob, current_price)
+    r6 = eval_volume_anomaly(kl15)
+    r7 = eval_wick_absorption(kl1)
+    r8 = eval_liquidity_sweep(kl1h, current_price)
+
+    total = r1["score"] + r2["score"] + r4["score"] + r5["score"] + r6["score"] + r7["score"] + r8["score"]
+
+    if total >= PUMP_SCORE_STRONG:
+        strength = "STRONG"
+        strength_emoji = "🚀"
+        strength_label = "STRONG — دخول قوي"
+    elif total >= PUMP_SCORE_MODERATE:
+        strength = "MODERATE"
+        strength_emoji = "⚠️"
+        strength_label = "MODERATE — دخول بحجم صغير"
+    else:
+        strength = None
+        strength_emoji = "❌"
+        strength_label = "تجاهل"
+
+    # حساب stop loss مقترح
+    stop_loss = current_price * 0.97  # -3% افتراضي
+
+    return {
+        "symbol":     symbol,
+        "price":      current_price,
+        "score":      total,
+        "max_score":  PUMP_MAX_SCORE,
+        "strength":   strength,
+        "strength_emoji": strength_emoji,
+        "strength_label": strength_label,
+        "stop_loss":  stop_loss,
+        "conditions": {
+            "funding_rate":     r1,
+            "cvd_divergence":   r2,
+            "taker_buy_ratio":  r4,
+            "ob_imbalance":     r5,
+            "volume_anomaly":   r6,
+            "wick_absorption":  r7,
+            "liquidity_sweep":  r8,
+        },
+        "early_warning": r1["pass"] and total < PUMP_SCORE_MODERATE,  # Funding تحقق بس
+    }
+
+
+def format_pump_signal_message(result):
+    """
+    تنسيق رسالة الإشارة على النمط المطلوب في الـ prompt
+    """
+    c = result["conditions"]
+    sym = result["symbol"]
+    sl_pct = (result["stop_loss"] - result["price"]) / result["price"] * 100
+
+    lines = [
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"{result['strength_emoji']} إشارة بامب محتملة",
+        "━━━━━━━━━━━━━━━━━━━━",
+        f"العملة    : {sym}USDT",
+        f"السعر     : {fmt_price(result['price'])}",
+        f"النقاط    : {result['score']} / {result['max_score']}",
+        f"القوة     : {result['strength_emoji']} {result['strength_label']}",
+        "",
+        "الشروط المتحققة:",
+    ]
+    # ترتيب الشروط بالأرقام كما في الـ prompt
+    items = [
+        ("1", "Funding Rate",       c["funding_rate"]),
+        ("2", "CVD Divergence",     c["cvd_divergence"]),
+        ("4", "Taker Buy Ratio",    c["taker_buy_ratio"]),
+        ("5", "Order Book Imb.",    c["ob_imbalance"]),
+        ("6", "Volume Anomaly",     c["volume_anomaly"]),
+        ("7", "Wick Absorption",    c["wick_absorption"]),
+        ("8", "Liquidity Sweep",    c["liquidity_sweep"]),
+    ]
+    for num, name, r in items:
+        icon = "✅" if r["pass"] else "❌"
+        lbl = r.get("label", "")
+        lines.append(f"{icon} ({num}) {name} : {lbl}")
+    lines += [
+        "",
+        f"Stop Loss المقترح : {fmt_price(result['stop_loss'])} ({sl_pct:.1f}%)",
+        f"الوقت : {datetime.now().strftime('%H:%M:%S')} (Gate.io)",
+        "━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "ℹ️ ملاحظة: Spoofing مُلغى (يحتاج WebSocket).",
+        "Liquidity Sweep بديل عن Liquidation Cluster.",
+    ]
+    return "\n".join(lines)
+
+
+def format_early_warning_message(result):
+    """رسالة تحت المراقبة (مرحلة 1)"""
+    c = result["conditions"]
+    fr = c["funding_rate"]
+    return (
+        "👁 عملة تحت المراقبة (Early Warning)\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"العملة     : {result['symbol']}USDT\n"
+        f"السعر      : {fmt_price(result['price'])}\n"
+        f"Funding    : {fr['label']}\n"
+        f"النقاط حتى الآن: {result['score']} / {PUMP_MAX_SCORE}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "📡 funding سالب جداً — احتمال صفر شورتات قريباً\n"
+        "البوت يتابع العملة دي بتردد أعلى الآن"
+    )
 
 
 # ==================== الحسابات الأساسية ====================
@@ -1326,83 +1772,112 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
                 return await _fetch_flow(c)
         await asyncio.gather(*[_with_sem(c) for c in top50], return_exceptions=True)
 
-    # ✅ جديد v3.1: استبعاد العملات ذات قوة السير الضعيف/الضعيف جداً
-    # ✅ جديد v3.2: نشترط كمان هيمنة الشراء >= MIN_BUY_DOMINANCE
-    # نُبقي فقط: قوي شرائياً (≥70%) + شراء غالب (≥55%)
-    before_filter = len(top50)
-    top50 = [
-        c for c in top50
-        if c.get("flow")
-        and c["flow"].get("score", 0) >= MIN_FLOW_SCORE_FOR_REPORT
-        and c["flow"].get("buy_dominance", 0) >= MIN_BUY_DOMINANCE
-    ]
-    # ✅ v4.0 — الترتيب: VIP أولاً، ثم قوة السير، ثم هيمنة الشراء
+    # ✅ v4.2 — لا نستبعد، نُصنّف فقط
+    # نحتفظ بكل الـ top 50 من حيث الفوليم، ونعطي كل عملة تصنيفها الحقيقي
+    # العملات بدون كلاينز (مش في Gate.io) تبقى في القائمة بدون قوة سير
+    for c in top50:
+        flow = c.get("flow")
+        if flow:
+            score = flow.get("score", 0)
+            buy_d = flow.get("buy_dominance", 0)
+            # التصنيف:
+            if score >= MIN_FLOW_SCORE_FOR_REPORT and buy_d >= MIN_BUY_DOMINANCE:
+                c["category"] = "strong_buy"   # 🔥 شراء قوي
+            elif buy_d >= MIN_BUY_DOMINANCE:
+                c["category"] = "buy_dominant" # 🟢 شراء غالب لكن السير متوسط
+            elif score >= MIN_FLOW_SCORE_FOR_REPORT:
+                c["category"] = "high_flow"    # 📈 سير عالي لكن ليس شراء غالب
+            else:
+                c["category"] = "neutral"      # 📊 عادي
+        else:
+            c["category"] = "no_data"          # ❓ بيانات غير متاحة
+
+    # ✅ v4.0 — الترتيب: VIP → شراء قوي → باقي حسب الفوليم
+    category_rank = {"strong_buy": 4, "buy_dominant": 3, "high_flow": 2, "neutral": 1, "no_data": 0}
     top50.sort(
         key=lambda x: (
             x.get("is_vip", False),
-            x["flow"]["score"],
-            x["flow"]["buy_dominance"],
-            x["volume_change"]
+            category_rank.get(x.get("category", "no_data"), 0),
+            x.get("flow", {}).get("score", 0) if x.get("flow") else 0,
+            x.get("volume_change", 0),
+            x.get("volume_24h", 0),
         ),
         reverse=True
     )
-    vip_count = sum(1 for c in top50 if c.get("is_vip"))
-    logger.info(f"فلتر الشراء: {before_filter} → {len(top50)} عملة | 💎 VIP: {vip_count}")
+    vip_count        = sum(1 for c in top50 if c.get("is_vip"))
+    strong_buy_count = sum(1 for c in top50 if c.get("category") == "strong_buy")
+    logger.info(f"تقرير الفوليم: {len(top50)} عملة | 💎 VIP: {vip_count} | 🔥 شراء قوي: {strong_buy_count}")
 
     if not top50:
         try:
             await bot.send_message(
                 chat_id=chat_target,
-                text=f"📊 لا توجد عملات بسير شرائي قوي حالياً\n"
-                     f"   (المطلوب: قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%)\n"
-                     f"⏰ {scan_time}",
+                text=f"📊 لا توجد عملات تجاوزت فلاتر الفوليم الأساسية\n⏰ {scan_time}",
                 disable_web_page_preview=True
             )
         except Exception as e:
             logger.error(f"خطأ ارسال تقرير فارغ: {e}")
-        logger.info("لا توجد عملات شراء قوي بعد الفلتر")
+        logger.info("لا توجد عملات بعد فلتر الفوليم")
         return
 
     chunk_size = 10
     chunks = [top50[i:i+chunk_size] for i in range(0, len(top50), chunk_size)]
 
+    # شارات التصنيف
+    cat_badge = {
+        "strong_buy":   "🔥 شراء قوي",
+        "buy_dominant": "🟢 شراء غالب",
+        "high_flow":    "📈 سير عالي",
+        "neutral":      "📊 عادي",
+        "no_data":      "❓ بدون كلاينز",
+    }
+
     for idx, chunk in enumerate(chunks, 1):
         lines = []
         if idx == 1:
             lines += [
-                f"📊 أعلى Altcoin بسير شرائي قوي — 24 ساعة",
+                f"📊 أعلى Altcoin بالفوليم — 24 ساعة",
                 f"⏰ {scan_time}",
-                f"📡 المصدر: CMC + Gate.io | الفوليوم الشرائي فقط",
-                f"🎯 الفلتر: قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%",
-                f"✅ {len(top50)} عملة  |  💎 VIP: {vip_count}",
-                f"💎 VIP = سيولة شراء مستمرة (3h+) + فوق VWAP",
+                f"📡 المصدر: Gate.io + CMC",
+                f"✅ {len(top50)} عملة | 💎 VIP: {vip_count} | 🔥 شراء قوي: {strong_buy_count}",
+                f"━━━ التصنيفات ━━━",
+                f"🔥 شراء قوي = قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + هيمنة ≥ {MIN_BUY_DOMINANCE:.0f}%",
+                f"🟢 شراء غالب = هيمنة ≥ {MIN_BUY_DOMINANCE:.0f}% (سير متوسط)",
+                f"📈 سير عالي = قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% (هيمنة أقل)",
+                f"💎 VIP = شراء مستمر 3h+ + فوق VWAP",
                 "━━━━━━━━━━━━━━━━━━━━", ""
             ]
 
         for i, c in enumerate(chunk, (idx-1)*chunk_size + 1):
             pc  = c["price_change_24h"]
-            vc  = c["volume_change"]
-            p1h = c["price_change_1h"]
+            vc  = c.get("volume_change", 0)
+            p1h = c.get("price_change_1h", 0)
             arrow = "🟢" if pc > 0 else "🔴"
             vip_badge = " 💎 VIP" if c.get("is_vip") else ""
+            category  = c.get("category", "no_data")
+            cat_lbl   = cat_badge.get(category, "")
             if vc >= 200:   vol_icon = "🔥🔥🔥"
             elif vc >= 100: vol_icon = "🔥🔥"
             elif vc >= 50:  vol_icon = "🔥"
             else:           vol_icon = "📈"
 
             lines.append(f"{i}. {arrow} {c['symbol']}{vip_badge} — {escape_md(c['name'])}")
+            lines.append(f"   🏷  {cat_lbl}")
             lines.append(f"   💵 {fmt_price(c['price'])}  ({pc:+.1f}%)  |  1h: {p1h:+.1f}%")
             lines.append(f"   💰 فوليم 24h: {fmt_vol(c['volume_24h'])}")
-            lines.append(f"   {vol_icon} زيادة الفوليم: {vc:+.0f}%")
+            if vc != 0:  # لو متاح (من CMC فقط)
+                lines.append(f"   {vol_icon} زيادة الفوليم: {vc:+.0f}%")
             # ===== قوة السير الشرائي + هيمنة الشراء =====
             flow = c.get("flow")
             if flow:
                 label, _ = classify_flow_strength(flow["score"])
                 lines.append(f"   📡 قوة سير الشراء: {flow['score']:.0f}%  {label}")
-                lines.append(f"   🟢 هيمنة الشراء: {flow['buy_dominance']:.0f}% من إجمالي الفوليوم")
+                lines.append(f"   🟢 هيمنة الشراء: {flow['buy_dominance']:.0f}%")
             else:
                 lines.append(f"   📡 قوة سير الشراء: ❓ بيانات غير متاحة")
-            lines.append(f"   🌐 {c['num_market_pairs']} منصة  |  CMC #{c['rank']}")
+            # rank لو من CMC
+            rank_str = f"CMC #{c['rank']}" if c.get('rank', 999999) < 999999 else "Gate-only"
+            lines.append(f"   🌐 {c.get('num_market_pairs', '?')} منصة  |  {rank_str}")
             lines.append("")
 
         if idx == len(chunks):
@@ -1424,218 +1899,115 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
     logger.info(f"تم إرسال التقرير: {len(top50)} عملة")
 
 
-# ============================================================
-# ✅ الوظيفة 2: فحص الإشارات — score >= 80 + شروط منظمة رأسياً
-# ============================================================
+# ════════════════════════════════════════════════════════════════════
+# ✅ v5.0 — فحص إشارات البامب (الـ 7 شروط من ملف prompt)
+# ════════════════════════════════════════════════════════════════════
 async def check_signals(bot: Bot, target_chat: int = None):
     global previous_signals
-    logger.info("فحص الإشارات التقنية المتطورة...")
-
+    logger.info("🚀 فحص إشارات البامب (Pump Detection v5.0)...")
     chat_target = target_chat if target_chat else int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
-        # ✅ v4.1 — جلب كل عملات Gate.io بدل CMC top 500
-        if USE_FULL_GATE_SCAN:
-            candidates_raw = await build_all_gate_candidates(
-                session, min_volume_usd=GATE_MIN_VOLUME_USD
-            )
-            if not candidates_raw:
-                logger.warning("Gate.io رجع فاضي — fallback لـ CMC")
-                cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
-                candidates_raw = [parse_coin(c) for c in (cmc_raw or [])]
-        else:
-            cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
-            if not cmc_raw: return
-            candidates_raw = [parse_coin(c) for c in cmc_raw]
+        # 1️⃣ جلب كل عملات Gate.io USDT
+        gate_tickers = await fetch_gate_tickers(session)
+        if not gate_tickers:
+            logger.error("❌ فشل جلب tickers من Gate.io")
+            return
 
-        # فلتر العملات المستبعدة (memes/stocks) + الفوليم الأدنى
+        # 2️⃣ فلتر العملات: فوليم 24h ≥ 5M$ (شرط شبيه بـ 50M$ على Binance Futures)
         candidates = []
-        for d in candidates_raw:
-            symbol = d.get("symbol", "")
-            name   = d.get("name", "")
-            tags   = d.get("tags", [])
-            if symbol in EXCLUDED_SYMBOLS: continue
-            if is_meme_coin(symbol, name, tags): continue
+        for t in gate_tickers:
+            d = parse_gate_ticker(t)
+            if not d: continue
+            if d["symbol"] in EXCLUDED_SYMBOLS: continue
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
+            if d["price"] <= 0: continue
             candidates.append(d)
-        # سقف للأمان
         candidates = candidates[:GATE_MAX_CANDIDATES]
-        logger.info(f"📋 سيتم فحص {len(candidates)} عملة")
+        logger.info(f"📋 سيتم فحص {len(candidates)} عملة (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)")
 
-        # ✅ v4.1 — semaphore لتحديد التوازي + تجنب rate limits
+        # 3️⃣ تقييم الـ 7 شروط لكل عملة بالتوازي
         sem = asyncio.Semaphore(GATE_PARALLEL_LIMIT)
-
         async def analyze(coin):
             async with sem:
-                candles = await fetch_klines(session, coin["symbol"])
-                if not candles or len(candles) < 25:
-                    return None  # كلاينز غير كافية
-                res     = score_coin(candles, coin)
-                sc      = res["score"]
-                details = res["details"]
-                # ✅ لا يضيف إلا لو النقاط >= 80
-                if sc < MIN_SCORE:
+                try:
+                    result = await evaluate_pump_signal(session, coin["symbol"], coin["price"])
+                    # نضيف معلومات العملة
+                    result["name"]            = coin.get("name", coin["symbol"])
+                    result["volume_24h"]      = coin["volume_24h"]
+                    result["price_change_24h"] = coin["price_change_24h"]
+                    return result
+                except Exception as e:
+                    logger.warning(f"خطأ تحليل {coin['symbol']}: {e}")
                     return None
-                # ✅ v4.0 — لا يضيف إلا لو 2 من 3 محركات اجتازت
-                if not details.get("confluence_passed", False):
-                    return None
-                rv = details.get("rvol", 1.0)
-                if rv < MIN_RVOL: return None
-                prev_pump = calc_prev_pump(candles)
-                if prev_pump > MAX_PREV_PUMP:
-                    logger.info(f"استبعاد {coin['symbol']} — pump سابق {prev_pump:.1f}%")
-                    return None
-                # ✅ v4.0 — احسب قوة السير + VIP status للإشارة
-                flow = calc_volume_flow_strength(candles)
-                is_vip, vip_checks = evaluate_vip_status(candles, flow)
-                coin.update({"score": sc, "reasons": res["reasons"],
-                             "details": details, "rvol": rv,
-                             "flow": flow, "is_vip": is_vip, "vip_checks": vip_checks})
-                return coin
 
-        # ✅ v4.1 — تشغيل التحليل على كل العملات (مع semaphore داخلي)
         tasks   = [analyze(c) for c in candidates]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    signals = [r for r in results if r and not isinstance(r, Exception)]
+    # 4️⃣ فلترة: نحتفظ بالإشارات MODERATE+ وكذلك Early Warnings
+    all_results     = [r for r in results if r and not isinstance(r, Exception)]
+    main_signals    = [r for r in all_results if r["strength"] in ("STRONG", "MODERATE")]
+    early_warnings  = [r for r in all_results if r["early_warning"]] if PUMP_EARLY_WARNING else []
 
-    fresh_signals = []
-    for c in signals:
-        sym = c["symbol"]
+    # 5️⃣ إزالة المكررات (cooldown 30 دقيقة كما في الـ prompt)
+    fresh_main = []
+    for r in main_signals:
+        sym = r["symbol"]
         if sym in seen_signals:
-            elapsed = datetime.now() - seen_signals[sym]
-            # ✅ v3.2: cooldown 6 ساعات بدل 24 (السكان أصبح مستمر)
-            if elapsed.total_seconds() < SIGNAL_COOLDOWN_HOURS * 3600:
-                logger.info(f"تخطي {sym} — إشارة مكررة (cooldown {SIGNAL_COOLDOWN_HOURS}h)")
+            elapsed = (datetime.now() - seen_signals[sym]).total_seconds()
+            if elapsed < PUMP_SIGNAL_COOLDOWN_MIN * 60:
                 continue
-        fresh_signals.append(c)
+        fresh_main.append(r)
+    fresh_early = []
+    for r in early_warnings:
+        sym = r["symbol"]
+        key = f"early_{sym}"
+        if key in seen_signals:
+            elapsed = (datetime.now() - seen_signals[key]).total_seconds()
+            if elapsed < PUMP_SIGNAL_COOLDOWN_MIN * 60:
+                continue
+        # لو العملة دلوقتي عندها main signal، نتخطى الـ early
+        if any(m["symbol"] == sym for m in fresh_main): continue
+        fresh_early.append(r)
 
-    signals = fresh_signals
-    signals.sort(key=lambda x: x.get("score",0), reverse=True)
+    # 6️⃣ ترتيب: الأقوى أولاً
+    fresh_main.sort(key=lambda x: x["score"], reverse=True)
+    fresh_early.sort(key=lambda x: x["conditions"]["funding_rate"]["value"] or 0)
 
-    if not signals:
-        logger.info(f"لا توجد إشارات جديدة >= {MIN_SCORE} نقطة")
+    if not fresh_main and not fresh_early:
+        logger.info(f"✅ لا توجد إشارات بامب جديدة (فحص {len(candidates)} عملة)")
         return
 
-    scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    # ✅ إشارة واحدة في كل رسالة (لأن الرسالة بقت طويلة بسبب الترتيب الرأسي)
-    chunk_size = 1
-    max_total = 10
-    signals_to_send = signals[:max_total]
-
-    # رسالة مقدمة
-    intro = [
-        f"🚨 تنبيه — {len(signals)} إشارة Pre-Pump (score >= {MIN_SCORE})",
-        f"⏰ {scan_time}",
-        f"━━━━━━━━━━━━━━━━━━━━"
-    ]
-    try:
-        await bot.send_message(chat_id=chat_target, text="\n".join(intro),
-                               disable_web_page_preview=True)
-        await asyncio.sleep(0.5)
-    except Exception as e:
-        logger.error(f"خطأ ارسال intro: {e}")
-
-    for c in signals_to_send:
-        pc    = c["price_change_24h"]
-        p1h   = c["price_change_1h"]
-        vc    = c["volume_change"]
-        sc    = c.get("score",0)
-        rv    = c.get("rvol",1.0)
-        dt    = c.get("details",{})
-        conf  = dt.get("confluence", {})
-        flow  = c.get("flow")
-        is_vip = c.get("is_vip", False)
-        arrow = "🟢" if pc > 0 else "🔴"
-        vip_badge = " 💎 VIP" if is_vip else ""
-
-        if sc >= 95:   strength = "🔥🔥🔥 ممتازة"
-        elif sc >= 90: strength = "🔥🔥 قوية جداً"
-        elif sc >= 85: strength = "🔥 قوية"
-        else:          strength = "✨ جيدة (80+)"
-
-        # ════════════ ✅ v4.0 — إشارة منظمة بالمحركات الثلاثة ════════════
-        lines = []
-        lines.append(f"{arrow} {c['symbol']}{vip_badge} — {escape_md(c['name'])}")
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"💵 السعر: {fmt_price(c['price'])}  ({pc:+.1f}%)")
-        lines.append(f"⏱ 1h: {p1h:+.2f}%  |  7d: {c['price_change_7d']:+.1f}%")
-        lines.append(f"🎯 النقاط: {sc}/100  —  {strength}")
-        engines = conf.get("engines_passed", 0)
-        lines.append(f"⚙️  محركات الـ Confluence: {engines}/3 ✅")
-        lines.append("")
-
-        # ═══ المحركات الثلاثة (الجزء الأهم) ═══
-        lines.append("🔥 محركات الإشارة:")
-        # محرك 1 - Momentum
-        mom = conf.get("momentum", {})
-        mom_icon = "✅" if mom.get("pass") else "❌"
-        lines.append(f"   {mom_icon} Momentum ({mom.get('score',0)}/3) — RSI+MACD+Stoch")
-        if mom.get("rsi") is not None:
-            lines.append(f"      └ RSI: {mom['rsi']}  |  Stoch K: {mom.get('stoch_k','—')}")
-        # محرك 2 - Smart Money
-        sm = conf.get("smart", {})
-        sm_icon = "✅" if sm.get("pass") else "❌"
-        lines.append(f"   {sm_icon} Smart Money ({sm.get('score',0)}/4) — CVD+OF+Wyckoff+SM")
-        # محرك 3 - Breakout
-        br = conf.get("breakout", {})
-        br_icon = "✅" if br.get("pass") else "❌"
-        lines.append(f"   {br_icon} Breakout ({br.get('score',0)}/4) — Squeeze+Surge+MA+HL")
-        lines.append("")
-
-        # ═══ السيولة الشرائية ═══
-        lines.append("📊 السيولة الشرائية:")
-        lines.append(f"   • RVOL: {rv:.2f}x")
-        lines.append(f"   • فوليم 24h: {fmt_vol(c['volume_24h'])}")
-        lines.append(f"   • زيادة الفوليم: {vc:+.0f}%")
-        if flow:
-            label, _ = classify_flow_strength(flow["score"])
-            lines.append(f"   • قوة سير الشراء: {flow['score']:.0f}%  {label}")
-            lines.append(f"   • هيمنة الشراء: {flow['buy_dominance']:.0f}%")
-        if dt.get("vol_surge"):
-            lines.append(f"   • قفزة فوليم: {dt.get('surge_ratio',0):.1f}x ⚡")
-        lines.append("")
-
-        # ═══ علامة VIP (لو متاحة) ═══
-        if is_vip:
-            lines.append("💎 معايير VIP المُحققة:")
-            for name, ok in c.get("vip_checks", []):
-                lines.append(f"   ✅ {name}")
-            lines.append("")
-
-        # ═══ معلومات السوق ═══
-        lines.append("ℹ️ معلومات السوق:")
-        lines.append(f"   • عدد المنصات: {c['num_market_pairs']}")
-        lines.append(f"   • CMC Rank: #{c['rank']}")
-        lines.append("")
-        lines.append(f"🔗 https://www.tradingview.com/chart/?symbol=GATEIO:{c['symbol']}_USDT")
-        lines.append(f"━━━━━━━━━━━━━━━━━━━━")
-        lines.append(f"💡 /coin {c['symbol']} للتحليل الشامل")
-        lines.append(f"📊 /check {c['symbol']} لتقييم القوة")
-
+    # 7️⃣ إرسال الإشارات الرئيسية
+    sent_count = 0
+    MAX_MAIN_SIGNALS = 10
+    for r in fresh_main[:MAX_MAIN_SIGNALS]:
         try:
-            await bot.send_message(
-                chat_id=chat_target,
-                text="\n".join(lines),
-                disable_web_page_preview=True
-            )
+            msg = format_pump_signal_message(r)
+            await bot.send_message(chat_id=chat_target, text=msg,
+                                    disable_web_page_preview=True)
+            seen_signals[r["symbol"]] = datetime.now()
+            sent_count += 1
             await asyncio.sleep(0.7)
         except Exception as e:
-            logger.error(f"خطأ ارسال إشارة: {e}")
+            logger.error(f"خطأ ارسال إشارة {r['symbol']}: {e}")
 
-    # رسالة الختام
-    try:
-        await bot.send_message(
-            chat_id=chat_target,
-            text="📡 CMC + Gate.io | بوت Pre-Pump v3",
-            disable_web_page_preview=True
-        )
-    except: pass
+    # 8️⃣ إرسال Early Warnings (مع حد أقصى 5)
+    MAX_EARLY = 5
+    for r in fresh_early[:MAX_EARLY]:
+        try:
+            msg = format_early_warning_message(r)
+            await bot.send_message(chat_id=chat_target, text=msg,
+                                    disable_web_page_preview=True)
+            seen_signals[f"early_{r['symbol']}"] = datetime.now()
+            sent_count += 1
+            await asyncio.sleep(0.7)
+        except Exception as e:
+            logger.error(f"خطأ ارسال early {r['symbol']}: {e}")
 
-    for c in signals:
-        seen_signals[c["symbol"]] = datetime.now()
-    previous_signals = {c["symbol"]: c for c in signals}
-    logger.info(f"تم إرسال {len(signals_to_send)} إشارة")
+    logger.info(f"📤 تم إرسال {sent_count} رسالة (main: {min(len(fresh_main),MAX_MAIN_SIGNALS)}, early: {min(len(fresh_early),MAX_EARLY)})")
+    previous_signals = {r["symbol"]: r for r in fresh_main}
+
 
 
 # ============================================================
@@ -2151,35 +2523,31 @@ async def continuous_signal_scanner(bot: Bot):
 
 # ==================== أوامر البوت ====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    src = "كل عملات Gate.io" if USE_FULL_GATE_SCAN else f"أعلى {CMC_LIMIT} في CMC"
     await update.message.reply_text(
-        "🚀 Altcoin Smart Scanner Bot v4.1\n"
-        "    — Full Gate.io + Confluence —\n\n"
-        "✨ الجديد في v4.1:\n"
-        f"• 🌐 الفحص يشمل {src}\n"
-        f"• ~1500-2500 عملة بدل 500\n"
-        f"• فلتر أولي: فوليوم ≥ ${GATE_MIN_VOLUME_USD/1000:.0f}K\n"
-        f"• {GATE_PARALLEL_LIMIT} طلبات متوازية\n\n"
-        "⚙️ 3 محركات Confluence (≥ 2/3):\n"
-        "   • Momentum (RSI+MACD+Stoch)\n"
-        "   • Smart Money (CVD+OF+Wyckoff+SM)\n"
-        "   • Breakout (Squeeze+Surge+MA+HL)\n\n"
-        "🔄 سكان البامب: مستمر بلا توقف\n"
-        f"   فاصل {SIGNAL_LOOP_GAP_SECONDS}ث | حد ≥ {MIN_SCORE}\n\n"
-        "📊 تقرير الفوليوم:\n"
-        f"   كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
-        f"   شراء فقط + قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%\n"
-        "   💎 VIP يُرتّب أولاً\n\n"
+        "🚀 Pump Detection Bot v5.0 — Gate.io\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "نظام كشف البامب قبل حدوثه عبر 7 شروط متقدمة:\n\n"
+        f"1️⃣ Funding Rate Anomaly        ({PUMP_W_FUNDING_RATE} pts)\n"
+        f"2️⃣ CVD Divergence                ({PUMP_W_CVD_DIVERGENCE} pts)\n"
+        f"4️⃣ Taker Buy Ratio               ({PUMP_W_TAKER_BUY_RATIO} pts)\n"
+        f"5️⃣ Order Book Imbalance        ({PUMP_W_OB_IMBALANCE} pts)\n"
+        f"6️⃣ Volume Anomaly                ({PUMP_W_VOLUME_ANOMALY} pt)\n"
+        f"7️⃣ Lower Wick Absorption       ({PUMP_W_WICK_ABSORPTION} pt)\n"
+        f"8️⃣ Liquidity Sweep                ({PUMP_W_LIQ_SWEEP} pts)\n\n"
+        f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
+        f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n\n"
+        f"🌐 المصدر: كل عملات Gate.io USDT\n"
+        f"   فلتر: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
+        f"🔄 سكان مستمر — فاصل {SIGNAL_LOOP_GAP_SECONDS}ث\n"
+        f"⏱ Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة لكل عملة\n\n"
+        "ℹ️ ملاحظات:\n"
+        "• Spoofing مُلغى (يحتاج WebSocket)\n"
+        "• Liquidity Sweep بديل عن Liquidation Cluster\n\n"
         "الأوامر:\n"
-        "/report  — تقرير فوري للسير الشرائي\n"
-        "/scan    — فحص الإشارات الآن\n"
-        "/coin SYMBOL  — تحليل شامل احترافي\n"
-        "/check SYMBOL — تقييم سريع (قوة/تحليل/سيولة/سرعة)\n"
-        "/info SYMBOL  — توكنوميكس\n"
-        "/vol SYMBOL   — حجم تداول\n"
-        "/top     — أفضل 5 إشارات\n"
-        "/status  — حالة البوت\n"
-        "/chatid  — معرفة الـ Chat ID"
+        "/info SYMBOL — توكنوميكس\n"
+        "/vol SYMBOL  — حجم تداول\n"
+        "/status      — حالة البوت\n"
+        "/chatid      — معرفة الـ Chat ID"
     )
 
 async def cmd_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2260,26 +2628,26 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         last_str = "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ Altcoin Bot — v4.1 Full Gate.io\n\n"
-        f"🌐 مصدر العملات:\n"
-        f"   {'كل Gate.io USDT (~1500-2500)' if USE_FULL_GATE_SCAN else f'CMC top {CMC_LIMIT}'}\n"
-        f"   فلتر أولي: فوليم ≥ ${GATE_MIN_VOLUME_USD/1000:.0f}K\n"
+        f"✅ Pump Detection Bot — v5.0\n\n"
+        f"🌐 المصدر: كل Gate.io USDT\n"
+        f"   فلتر: فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
         f"   توازي: {GATE_PARALLEL_LIMIT} طلب\n\n"
-        f"📊 تقرير الفوليوم:\n"
-        f"   كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
-        f"   شراء ≥ {MIN_BUY_DOMINANCE:.0f}% + قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}%\n"
-        f"   💎 VIP يُرتّب أولاً\n\n"
-        f"🔍 سكان البامب: {scanner_status}\n"
+        f"🚀 سكان البامب: {scanner_status}\n"
         f"   فاصل: {SIGNAL_LOOP_GAP_SECONDS}ث\n"
-        f"   آخر دورة: {last_str}\n"
-        f"   حد الإشارة: ≥ {MIN_SCORE}\n"
-        f"   محركات Confluence: ≥ {CONFLUENCE_ENGINES_REQ}/3\n"
-        f"   Cooldown: {SIGNAL_COOLDOWN_HOURS}h\n\n"
-        f"⚙️ 3 محركات Confluence:\n"
-        f"   • Momentum: RSI+MACD+Stoch (3/3)\n"
-        f"   • Smart Money: CVD+OF+Wyckoff+SM (3/4)\n"
-        f"   • Breakout: Squeeze+Surge+MA+HL (3/4)\n\n"
-        f"📡 Gate.io + CMC (1h + 4h)\n"
+        f"   آخر دورة: {last_str}\n\n"
+        f"📊 نظام النقاط (المجموع: {PUMP_MAX_SCORE}):\n"
+        f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG} نقاط\n"
+        f"   ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE} نقاط\n"
+        f"   Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة\n\n"
+        f"🔬 الشروط النشطة (7):\n"
+        f"   1. Funding Rate Anomaly\n"
+        f"   2. CVD Divergence\n"
+        f"   4. Taker Buy Ratio\n"
+        f"   5. Order Book Imbalance\n"
+        f"   6. Volume Anomaly\n"
+        f"   7. Lower Wick Absorption\n"
+        f"   8. Liquidity Sweep\n\n"
+        f"⛔ Spoofing: مُلغى (يحتاج WebSocket)\n"
         f"🔒 Lock نشط ضد الإرسال المزدوج"
     )
 
@@ -2303,10 +2671,11 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *البوت بدأ التشغيل*\n"
-                f"🔄 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
-                f"📊 تقرير الفوليوم: كل {SCAN_INTERVAL_MINUTES//60} ساعات\n"
-                f"🎯 الفلتر: شراء ≥ {MIN_BUY_DOMINANCE:.0f}% + قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}%"
+                "🟢 *Pump Detection Bot v5.0 — Gate.io*\n"
+                f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
+                f"🌐 يفحص كل عملات Gate.io USDT (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)\n"
+                f"⚡ 7 شروط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
+                f"🚀 STRONG ≥ {PUMP_SCORE_STRONG} | ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}"
             ),
             parse_mode="Markdown",
         )
@@ -2339,13 +2708,8 @@ def main():
         .build()
     )
     app.add_handler(CommandHandler("start",   cmd_start))
-    app.add_handler(CommandHandler("report",  cmd_report))
-    app.add_handler(CommandHandler("scan",    cmd_scan))
     app.add_handler(CommandHandler("vol",     cmd_vol))
     app.add_handler(CommandHandler("info",    cmd_info))
-    app.add_handler(CommandHandler("coin",    cmd_coin))
-    app.add_handler(CommandHandler("check",   cmd_check))   # ✅ v4.0
-    app.add_handler(CommandHandler("top",     cmd_top))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("chatid",  cmd_chatid))
 
@@ -2358,28 +2722,31 @@ def main():
         try: j.schedule_removal()
         except: pass
 
-    # ✅ تقرير الفوليوم فقط يبقى مجدولاً — السكان أصبح مستمراً عبر post_init
-    jq.run_repeating(
-        job_volume_report,
-        interval=SCAN_INTERVAL_MINUTES*60,
-        first=30,
-        name="volume_report_job"
-    )
+    # ✅ v5.0 — السكان المستمر فقط (تم حذف تقرير الفوليوم)
+    # السكان يبدأ من post_init كـ background task
 
     print("="*60)
-    print("🚀 Altcoin Smart Scanner Bot v4.1 - Full Gate.io")
-    src = "كل Gate.io USDT" if USE_FULL_GATE_SCAN else f"CMC top {CMC_LIMIT}"
-    print(f"🌐 المصدر: {src}")
-    print(f"   فلتر أولي: فوليم ≥ ${GATE_MIN_VOLUME_USD/1000:.0f}K")
+    print("🚀 Pump Detection Bot v5.0 — Gate.io Edition")
+    print(f"🌐 المصدر: كل Gate.io USDT (~{GATE_MAX_CANDIDATES} عملة)")
+    print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
-    print(f"📊 تقرير الفوليوم كل {SCAN_INTERVAL_MINUTES//60} ساعات (شرائي فقط)")
-    print(f"   الفلتر: قوة ≥ {MIN_FLOW_SCORE_FOR_REPORT:.0f}% + شراء ≥ {MIN_BUY_DOMINANCE:.0f}%")
-    print(f"   💎 VIP يُرتّب أولاً")
-    print(f"🔄 سكان البامب: مستمر (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)")
-    print(f"   حد الإشارة: score >= {MIN_SCORE}")
-    print(f"   محركات Confluence: >= {CONFLUENCE_ENGINES_REQ}/3")
-    print(f"⚙️  3 محركات: Momentum + Smart Money + Breakout")
-    print(f"📋 /coin = تحليل شامل  |  /check = تقييم سريع")
+    print(f"")
+    print(f"🚨 نظام البامب (7 شروط):")
+    print(f"   1. Funding Rate Anomaly      ({PUMP_W_FUNDING_RATE} pts)")
+    print(f"   2. CVD Divergence             ({PUMP_W_CVD_DIVERGENCE} pts)")
+    print(f"   3. Spoofing                   ❌ مُلغى (يحتاج WebSocket)")
+    print(f"   4. Taker Buy Ratio            ({PUMP_W_TAKER_BUY_RATIO} pts)")
+    print(f"   5. Order Book Imbalance       ({PUMP_W_OB_IMBALANCE} pts)")
+    print(f"   6. Volume Anomaly             ({PUMP_W_VOLUME_ANOMALY} pts)")
+    print(f"   7. Lower Wick Absorption      ({PUMP_W_WICK_ABSORPTION} pts)")
+    print(f"   8. Liquidity Sweep (بديل)     ({PUMP_W_LIQ_SWEEP} pts)")
+    print(f"   ───────────────────────────")
+    print(f"   المجموع: {PUMP_MAX_SCORE} نقاط")
+    print(f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG}  |  ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}")
+    print(f"")
+    print(f"🔄 السكان المستمر: فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
+    print(f"   Cooldown لكل عملة: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة")
+    print(f"🔔 الإرسال: الأدمن فقط")
     print(f"🔒 Lock نشط ضد الإرسال المزدوج")
     print("="*60)
 
