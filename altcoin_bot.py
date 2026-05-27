@@ -798,12 +798,24 @@ async def evaluate_pump_signal(session, symbol, current_price):
     total = r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"] + r6["score"] + r7["score"]
 
     # ───── شرط الـ core الإلزامي ─────
-    # لازم 2 من الـ 4 الأساسية يكونوا متفعلين
     core_passed = sum(1 for r in [r1, r2, r3, r4] if r["pass"])
     core_ok = core_passed >= 2
 
+    # ───── ✅ v6.1 — Override: 3 من 4 أساسية = إشارة فورية ─────
+    core_override = core_passed >= 3
+
     # ───── تصنيف القوة ─────
-    if total >= PUMP_SCORE_STRONG and core_ok:
+    if core_override and total >= PUMP_SCORE_STRONG:
+        # 3+ أساسية + نقاط عالية = STRONG ⭐⭐
+        strength = "STRONG"
+        strength_emoji = "\U0001f680"
+        strength_label = f"STRONG — {core_passed}/4 أساسية متفعلة 🔥"
+    elif core_override:
+        # 3+ أساسية مهما كانت النقاط = MODERATE على الأقل
+        strength = "MODERATE"
+        strength_emoji = "\u26a0\ufe0f"
+        strength_label = f"MODERATE — {core_passed}/4 أساسية متفعلة ⭐"
+    elif total >= PUMP_SCORE_STRONG and core_ok:
         strength = "STRONG"
         strength_emoji = "\U0001f680"
         strength_label = "STRONG — دخول قوي"
