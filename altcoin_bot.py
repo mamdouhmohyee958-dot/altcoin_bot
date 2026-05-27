@@ -67,20 +67,26 @@ PUMP_W_CVD_DIVERGENCE    = 4   # 2) ⭐ CVD Divergence (الأهم)
 PUMP_W_TAKER_BUY_RATIO   = 3   # 3) ⭐ Taker Buy Ratio
 PUMP_W_OB_IMBALANCE      = 3   # 4) ⭐ Order Book Imbalance
 
-# ───── الشروط الـ 3 الجديدة (تكميلية) ─────
+# ───── الشروط التكميلية ─────
 PUMP_W_VOL_ACCEL         = 3   # 5) Volume Acceleration
-PUMP_W_SUSTAINED_BUY     = 3   # 6) Sustained Buy Pressure
-PUMP_W_BID_WALL          = 3   # 7) Bid Wall (دعم شراء قوي)
+PUMP_W_BID_WALL          = 3   # 6) Bid Wall (دعم شراء قوي)
+# ❌ v6.6 — Sustained Buy حُذف (مش دقيق على Gate spot)
 
-PUMP_MAX_SCORE           = 22  # المجموع الأقصى
-PUMP_SCORE_STRONG        = 15  # 🚀 STRONG (≥ 68%)
-PUMP_SCORE_MODERATE      = 11  # ⚠️ MODERATE (≥ 50%)
+# ✅ v6.6 — الشروط الحديثة الجديدة
+PUMP_W_WHALE_TRADES      = 3   # 7) 🐋 Whale Trades (صفقات ≥ $5K)
+PUMP_W_VOLUME_SPIKE      = 3   # 8) 📊 Volume Spike (فوليم آخر 15m vs 6h)
+PUMP_W_SPREAD_TIGHT      = 2   # 9) 🎯 Spread Tightness (سيولة قوية)
+
+PUMP_MAX_SCORE           = 24  # 13 (core) + 6 (filler) + 8 (advanced) = 24
+PUMP_SCORE_STRONG        = 16  # 🚀 STRONG (≥ 67%)
+PUMP_SCORE_MODERATE      = 12  # ⚠️ MODERATE (≥ 50%)
 PUMP_SIGNAL_COOLDOWN_MIN = 180 # (مرجعي فقط — لم يعد مستخدماً في v6.5)
 PUMP_RESEND_MIN_INCREASE = 1   # ✅ v6.5 — نقطة واحدة كافية
 PUMP_RESEND_ON_UPGRADE   = False # ✅ v6.5 — الترقية وحدها ميرضاش، لازم زيادة فعلية في النقاط
 
-# الشرط الإلزامي: لازم core_indicators يكون متفعل
+# ✅ v6.6 — الشرط الإلزامي: 3 من 4 أساسية لازم تتحقق
 PUMP_REQUIRE_CORE        = True
+PUMP_CORE_REQUIRED       = 3   # ✅ v6.6 — 3 من 4 أساسية (كان 2)
 
 # ───── عتبات الشروط ─────
 PUMP_FUNDING_RATE_LOW    = -0.0005   # -0.05% = 2 نقاط
@@ -94,14 +100,21 @@ PUMP_OB_IMBALANCE_MIN    = 0.70      # ≥ 70% = 2 نقاط
 PUMP_OB_IMBALANCE_STRONG = 0.85      # ≥ 85% = 3 نقاط
 PUMP_OB_RANGE_PCT        = 0.02      # نطاق ±2%
 
-# ───── الشروط الجديدة ─────
+# ───── عتبات الشروط التكميلية ─────
 PUMP_VOL_ACCEL_MIN       = 1.5       # 1.5x = 2 نقاط
 PUMP_VOL_ACCEL_STRONG    = 2.5       # 2.5x = 3 نقاط
-PUMP_SUSTAINED_CANDLES   = 3         # 3 شموع متتالية
-PUMP_SUSTAINED_BUY_PCT   = 0.55      # 55% buy volume per candle
 PUMP_BID_WALL_RANGE      = 0.015     # ±1.5% من السعر
 PUMP_BID_WALL_MIN_RATIO  = 2.0       # bid wall ≥ 2x متوسط الـ asks
 PUMP_BID_WALL_STRONG     = 4.0       # ≥ 4x = ⭐ قوي جداً
+
+# ✅ v6.6 — عتبات الشروط الحديثة
+PUMP_WHALE_TRADE_MIN_USD = 5_000     # صفقة ≥ $5K = whale (خفّضناه لتشمل عملات أصغر)
+PUMP_WHALE_COUNT_MIN     = 2         # 2+ صفقات whale = 2 نقاط
+PUMP_WHALE_COUNT_STRONG  = 4         # 4+ صفقات whale = 3 نقاط
+PUMP_VOL_SPIKE_MIN       = 2.0       # 2x = 2 نقاط
+PUMP_VOL_SPIKE_STRONG    = 3.0       # 3x = 3 نقاط
+PUMP_SPREAD_TIGHT_PCT    = 0.003     # spread ≤ 0.3% = ضيق
+PUMP_SPREAD_TIGHT_STRONG = 0.001     # ≤ 0.1% = قوي جداً
 
 # ═══════════════════════════════════════════════════════════════
 # ✅ v5.0 — نظام الـ 15 شرط (Pro Trader System)
@@ -863,37 +876,88 @@ def eval_volume_acceleration(candles_1h):
             "label": f"{ratio:.2f}x (الحد {PUMP_VOL_ACCEL_MIN}x)"}
 
 
-def eval_sustained_buy_pressure(candles_1h):
+def eval_whale_trades(trades):
     """
-    الشرط 6 — Sustained Buy Pressure (max 3 pts)
-    3 شموع متتالية فيها:
-      - شمعة خضراء (close > open)
-      - الفوليوم الشرائي ≥ 55% (تقريبي: شمعة خضراء = 100% buy، حمراء = 0%)
-    لا نملك tick-by-tick بيانات داخل الشمعة من /spot/candlesticks،
-    لذا نستخدم منطق: شمعة خضراء قوية + range > 0.3% = ضغط شراء حقيقي
+    ✅ v6.6 — الشرط 6: 🐋 Whale Trades Detection (max 3 pts)
+    صفقات كبيرة (≥ $5K) خلال آخر 5 دقائق = whales بيشتروا
+    نقيس صافي الشراء (buy - sell) للـ whales
     """
-    if not candles_1h or len(candles_1h) < PUMP_SUSTAINED_CANDLES + 1:
-        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز غير كافية"}
-    last = candles_1h[-PUMP_SUSTAINED_CANDLES:]
-    sustained_count = 0
-    for c in last:
-        if c["open"] <= 0: continue
-        body_pct = (c["close"] - c["open"]) / c["open"] * 100
-        rng = c["high"] - c["low"]
-        if rng <= 0: continue
-        body = abs(c["close"] - c["open"])
-        body_ratio = body / rng  # حجم الجسم vs المدى الكلي
-        # شمعة خضراء + body كبير (مش doji) + حركة محسوسة
-        is_strong = c["close"] > c["open"] and body_ratio > 0.5 and body_pct > 0.2
-        if is_strong:
-            sustained_count += 1
-    is_pass = sustained_count >= PUMP_SUSTAINED_CANDLES
-    return {
-        "pass":  is_pass,
-        "score": PUMP_W_SUSTAINED_BUY if is_pass else (2 if sustained_count >= 2 else 0),
-        "value": sustained_count,
-        "label": f"{sustained_count}/{PUMP_SUSTAINED_CANDLES} شموع خضراء قوية متتالية",
-    }
+    if not trades or len(trades) < 20:
+        return {"pass": False, "score": 0, "value": 0,
+                "label": "بيانات صفقات غير كافية"}
+    # آخر 5 دقائق من الصفقات (timestamps بالـ ms)
+    now_ts = max(t["ts"] for t in trades)
+    five_min_ago = now_ts - (5 * 60 * 1000)
+    recent = [t for t in trades if t["ts"] >= five_min_ago]
+    if len(recent) < 5:
+        recent = trades[-50:]  # fallback إن آخر 5 دقائق قليلة جداً
+    # نُحسب صفقات الحيتان
+    whale_buys = [t for t in recent
+                  if t["side"] == "buy" and (t["qty"] * t["price"]) >= PUMP_WHALE_TRADE_MIN_USD]
+    whale_sells = [t for t in recent
+                   if t["side"] == "sell" and (t["qty"] * t["price"]) >= PUMP_WHALE_TRADE_MIN_USD]
+    buy_count   = len(whale_buys)
+    buy_value   = sum(t["qty"] * t["price"] for t in whale_buys)
+    sell_value  = sum(t["qty"] * t["price"] for t in whale_sells)
+    net_buy     = buy_value - sell_value
+    # الشرط: صفقات شراء حيتان + صافي شراء موجب
+    if buy_count >= PUMP_WHALE_COUNT_STRONG and net_buy > 0:
+        return {"pass": True, "score": PUMP_W_WHALE_TRADES, "value": buy_count,
+                "label": f"{buy_count}🐋 شراء (${buy_value/1000:.0f}K vs ${sell_value/1000:.0f}K بيع)"}
+    if buy_count >= PUMP_WHALE_COUNT_MIN and net_buy > 0:
+        return {"pass": True, "score": 2, "value": buy_count,
+                "label": f"{buy_count}🐋 شراء (${buy_value/1000:.0f}K)"}
+    return {"pass": False, "score": 0, "value": buy_count,
+            "label": f"{buy_count}🐋 شراء / {len(whale_sells)}🐋 بيع"}
+
+
+def eval_volume_spike(candles_1h):
+    """
+    ✅ v6.6 — الشرط 7: 📊 Volume Spike (max 3 pts)
+    آخر شمعة 1h vs متوسط الـ 6 ساعات قبلها
+    Spike قوي = اهتمام مفاجئ بالعملة
+    """
+    if not candles_1h or len(candles_1h) < 7:
+        return {"pass": False, "score": 0, "value": 0,
+                "label": "كلاينز غير كافية"}
+    last_vol = candles_1h[-1]["volume"]
+    # آخر 6 ساعات قبل الأخيرة
+    prev_6_avg = sum(c["volume"] for c in candles_1h[-7:-1]) / 6
+    if prev_6_avg <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "متوسط صفر"}
+    ratio = last_vol / prev_6_avg
+    if ratio >= PUMP_VOL_SPIKE_STRONG:
+        return {"pass": True, "score": PUMP_W_VOLUME_SPIKE, "value": ratio,
+                "label": f"{ratio:.1f}x فوليم آخر ساعة 🔥🔥"}
+    if ratio >= PUMP_VOL_SPIKE_MIN:
+        return {"pass": True, "score": 2, "value": ratio,
+                "label": f"{ratio:.1f}x فوليم آخر ساعة 🔥"}
+    return {"pass": False, "score": 0, "value": ratio,
+            "label": f"{ratio:.2f}x (الحد {PUMP_VOL_SPIKE_MIN}x)"}
+
+
+def eval_spread_tightness(ob, current_price):
+    """
+    ✅ v6.6 — الشرط 8: 🎯 Spread Tightness (max 2 pts)
+    spread ضيق = سيولة قوية = market makers نشطين = جاهز للحركة
+    spread واسع = سيولة ضعيفة = حركة عشوائية
+    """
+    if not ob or not ob.get("bids") or not ob.get("asks") or current_price <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "غير متاح"}
+    best_bid = max(p for p, q in ob["bids"]) if ob["bids"] else 0
+    best_ask = min(p for p, q in ob["asks"]) if ob["asks"] else 0
+    if best_bid <= 0 or best_ask <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "order book غير صالح"}
+    spread = best_ask - best_bid
+    spread_pct = spread / current_price
+    if spread_pct <= PUMP_SPREAD_TIGHT_STRONG:
+        return {"pass": True, "score": PUMP_W_SPREAD_TIGHT, "value": spread_pct,
+                "label": f"spread {spread_pct*100:.3f}% (سيولة ممتازة) 🎯"}
+    if spread_pct <= PUMP_SPREAD_TIGHT_PCT:
+        return {"pass": True, "score": 1, "value": spread_pct,
+                "label": f"spread {spread_pct*100:.3f}% (سيولة جيدة)"}
+    return {"pass": False, "score": 0, "value": spread_pct,
+            "label": f"spread {spread_pct*100:.3f}% واسع (الحد {PUMP_SPREAD_TIGHT_PCT*100:.2f}%)"}
 
 
 def eval_bid_wall(ob, current_price):
@@ -953,35 +1017,49 @@ async def evaluate_pump_signal(session, symbol, current_price):
     r3 = eval_taker_buy_ratio(trades)                         # 3) Taker (3 pts)
     r4 = eval_orderbook_imbalance(ob, current_price)          # 4) OB Imbalance (3 pts)
     r5 = eval_volume_acceleration(kl1h)                       # 5) Vol Accel (3 pts)
-    r6 = eval_sustained_buy_pressure(kl1h)                    # 6) Sustained (3 pts)
-    r7 = eval_bid_wall(ob, current_price)                     # 7) Bid Wall (3 pts)
+    r6 = eval_bid_wall(ob, current_price)                     # 6) Bid Wall (3 pts)
+    # ✅ v6.6 — الشروط الحديثة الجديدة
+    r7 = eval_whale_trades(trades)                            # 7) Whale (3 pts)
+    r8 = eval_volume_spike(kl1h)                              # 8) Vol Spike (3 pts)
+    r9 = eval_spread_tightness(ob, current_price)             # 9) Spread (2 pts)
 
-    total = r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"] + r6["score"] + r7["score"]
+    total = (r1["score"] + r2["score"] + r3["score"] + r4["score"] +
+             r5["score"] + r6["score"] + r7["score"] + r8["score"] + r9["score"])
 
-    # ───── شرط الـ core الإلزامي ─────
+    # ───── ✅ v6.6 — شرط إلزامي صارم: 3 من 4 أساسية لازم تتحقق ─────
     core_passed = sum(1 for r in [r1, r2, r3, r4] if r["pass"])
-    core_ok = core_passed >= 2
-
-    # ───── ✅ v6.2 — Override: 3+ من 4 أساسية = إشارة دخول STRONG فورية ─────
-    core_override = core_passed >= 3
 
     # ───── تصنيف القوة ─────
-    if core_override:
-        # 3 أو 4 من الأساسية متفعلين = إشارة دخول STRONG (مهما كانت النقاط)
+    if core_passed < PUMP_CORE_REQUIRED:
+        # ❌ لو أقل من 3 أساسية، يُتجاهل مهما كانت النقاط
+        strength = None
+        strength_emoji = "\u274c"
+        strength_label = f"تجاهل ({core_passed}/4 أساسية فقط — الحد {PUMP_CORE_REQUIRED}/4)"
+    elif core_passed == 4 and total >= PUMP_SCORE_STRONG:
+        # 4/4 أساسية + نقاط قوية = إشارة مثالية
         strength = "STRONG"
         strength_emoji = "\U0001f680"
-        if core_passed == 4:
-            strength_label = "STRONG — 4/4 أساسية متفعلة 🔥🔥 إشارة مثالية"
-        else:
-            strength_label = "STRONG — 3/4 أساسية متفعلة 🔥 إشارة دخول"
-    elif total >= PUMP_SCORE_STRONG and core_ok:
+        strength_label = f"STRONG — 4/4 أساسية مثالية 🔥🔥 ({total}/{PUMP_MAX_SCORE})"
+    elif core_passed == 4:
+        # 4/4 أساسية بدون نقاط عالية = STRONG عادي
         strength = "STRONG"
         strength_emoji = "\U0001f680"
-        strength_label = "STRONG — نقاط عالية + أساسية كافية"
-    elif total >= PUMP_SCORE_MODERATE and core_ok:
+        strength_label = f"STRONG — 4/4 أساسية متفعلة 🔥"
+    elif core_passed == 3 and total >= PUMP_SCORE_STRONG:
+        # 3/4 أساسية + نقاط قوية = STRONG
+        strength = "STRONG"
+        strength_emoji = "\U0001f680"
+        strength_label = f"STRONG — 3/4 أساسية + نقاط عالية ({total}/{PUMP_MAX_SCORE})"
+    elif core_passed == 3 and total >= PUMP_SCORE_MODERATE:
+        # 3/4 أساسية + نقاط متوسطة = MODERATE
         strength = "MODERATE"
         strength_emoji = "\u26a0\ufe0f"
-        strength_label = "MODERATE — دخول بحجم صغير"
+        strength_label = f"MODERATE — 3/4 أساسية ({total}/{PUMP_MAX_SCORE})"
+    elif core_passed == 3:
+        # 3/4 أساسية + نقاط منخفضة = MODERATE (لازم نعطي الإشارة)
+        strength = "MODERATE"
+        strength_emoji = "\u26a0\ufe0f"
+        strength_label = f"MODERATE — 3/4 أساسية متفعلة"
     else:
         strength = None
         strength_emoji = "\u274c"
@@ -1005,8 +1083,11 @@ async def evaluate_pump_signal(session, symbol, current_price):
             "taker_buy_ratio":  r3,
             "ob_imbalance":     r4,
             "vol_accel":        r5,
-            "sustained_buy":    r6,
-            "bid_wall":         r7,
+            "bid_wall":         r6,
+            # ✅ v6.6 — الشروط الحديثة
+            "whale_trades":     r7,
+            "volume_spike":     r8,
+            "spread_tight":     r9,
         },
     }
 
@@ -1037,8 +1118,11 @@ def format_pump_signal_message(result):
         ("\u2b50", "Taker Buy Ratio",    c["taker_buy_ratio"]),
         ("\u2b50", "Order Book Imb.",    c["ob_imbalance"]),
         ("",        "Volume Accel.",      c["vol_accel"]),
-        ("",        "Sustained Buy",      c["sustained_buy"]),
         ("",        "Bid Wall",           c["bid_wall"]),
+        # ✅ v6.6 — الشروط الحديثة
+        ("🔥",      "Whale Trades",       c.get("whale_trades", {"pass": False, "score": 0, "label": "—"})),
+        ("🔥",      "Volume Spike",       c.get("volume_spike", {"pass": False, "score": 0, "label": "—"})),
+        ("🔥",      "Spread Tightness",   c.get("spread_tight", {"pass": False, "score": 0, "label": "—"})),
     ]
     for marker, name, r in items:
         icon = "\u2705" if r["pass"] else "\u274c"
@@ -1050,7 +1134,7 @@ def format_pump_signal_message(result):
         f"Stop Loss : {fmt_price(result['stop_loss'])} ({sl_pct:.1f}%)",
         f"الوقت     : {datetime.now().strftime('%H:%M:%S')} Gate.io",
         "\u2501" * 20,
-        "\u2b50 = شرط أساسي",
+        "\u2b50 = شرط أساسي  |  🔥 = شرط حديث",
     ]
     return "\n".join(lines)
 
@@ -2798,15 +2882,18 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"4️⃣ Order Book Imbalance      ({PUMP_W_OB_IMBALANCE} pts)\n\n"
         "📊 الشروط التكميلية:\n"
         f"5️⃣ Volume Acceleration       ({PUMP_W_VOL_ACCEL} pts)\n"
-        f"6️⃣ Sustained Buy Pressure    ({PUMP_W_SUSTAINED_BUY} pts)\n"
-        f"7️⃣ Bid Wall (دعم قوي)         ({PUMP_W_BID_WALL} pts)\n\n"
+        f"6️⃣ Bid Wall (دعم قوي)         ({PUMP_W_BID_WALL} pts)\n\n"
+        "🔥 الشروط الحديثة:\n"
+        f"7️⃣ 🐋 Whale Trades            ({PUMP_W_WHALE_TRADES} pts)\n"
+        f"8️⃣ 📊 Volume Spike            ({PUMP_W_VOLUME_SPIKE} pts)\n"
+        f"9️⃣ 🎯 Spread Tightness        ({PUMP_W_SPREAD_TIGHT} pts)\n\n"
         f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
         f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n"
-        f"⭐ Override: 3/4 أساسية = إشارة فورية\n\n"
+        f"⭐ شرط إلزامي: 3/4 أساسية لازم تتحقق\n\n"
         f"🌐 المصدر: كل عملات Gate.io USDT\n"
-        f"   فلتر: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
+        f"   فلتر: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.2f}M\n"
         f"🔄 سكان مستمر — فاصل {SIGNAL_LOOP_GAP_SECONDS}ث\n"
-        f"⏱ Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN}m (إلا لو النقاط زادت)\n\n"
+        f"📌 ميتكررش إلا لو النقاط زادت\n\n"
         "الأوامر:\n"
         "/info SYMBOL — توكنوميكس\n"
         "/vol SYMBOL  — حجم تداول\n"
@@ -2903,7 +2990,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG} نقاط\n"
         f"   ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE} نقاط\n"
         f"   Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة\n\n"
-        f"🔬 الشروط النشطة (7):\n"
+        f"🔬 الشروط النشطة (9):\n"
         f"   ⭐ الأساسية:\n"
         f"   1. Funding Rate Anomaly\n"
         f"   2. CVD Divergence\n"
@@ -2911,9 +2998,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   4. Order Book Imbalance\n"
         f"   📊 التكميلية:\n"
         f"   5. Volume Acceleration\n"
-        f"   6. Sustained Buy Pressure\n"
-        f"   7. Bid Wall (دعم شراء قوي)\n\n"
-        f"⭐ Override: 3/4 أساسية = إشارة فورية\n"
+        f"   6. Bid Wall (دعم شراء قوي)\n"
+        f"   🔥 الحديثة:\n"
+        f"   7. 🐋 Whale Trades\n"
+        f"   8. 📊 Volume Spike\n"
+        f"   9. 🎯 Spread Tightness\n\n"
+        f"⭐ شرط إلزامي: 3/4 أساسية\n"
+        f"📌 ميتكررش إلا لو النقاط زادت\n"
         f"🔒 Lock نشط ضد الإرسال المزدوج"
     )
 
@@ -2998,7 +3089,7 @@ def main():
     print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
     print(f"")
-    print(f"🚨 نظام البامب (7 شروط):")
+    print(f"🚨 نظام البامب (9 شروط):")
     print(f"   ⭐ الأساسية:")
     print(f"   1. Funding Rate Anomaly      ({PUMP_W_FUNDING_RATE} pts)")
     print(f"   2. CVD Divergence             ({PUMP_W_CVD_DIVERGENCE} pts)")
@@ -3006,15 +3097,18 @@ def main():
     print(f"   4. Order Book Imbalance       ({PUMP_W_OB_IMBALANCE} pts)")
     print(f"   📊 التكميلية:")
     print(f"   5. Volume Acceleration        ({PUMP_W_VOL_ACCEL} pts)")
-    print(f"   6. Sustained Buy Pressure     ({PUMP_W_SUSTAINED_BUY} pts)")
-    print(f"   7. Bid Wall                   ({PUMP_W_BID_WALL} pts)")
+    print(f"   6. Bid Wall                   ({PUMP_W_BID_WALL} pts)")
+    print(f"   🔥 الحديثة:")
+    print(f"   7. 🐋 Whale Trades             ({PUMP_W_WHALE_TRADES} pts)")
+    print(f"   8. 📊 Volume Spike             ({PUMP_W_VOLUME_SPIKE} pts)")
+    print(f"   9. 🎯 Spread Tightness         ({PUMP_W_SPREAD_TIGHT} pts)")
     print(f"   ───────────────────────────")
     print(f"   المجموع: {PUMP_MAX_SCORE} نقاط")
     print(f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG}  |  ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}")
-    print(f"   ⭐ Override: 3/4 أساسية = إشارة فورية")
+    print(f"   ⭐ شرط إلزامي: 3/4 أساسية لازم تتحقق")
     print(f"")
     print(f"🔄 السكان المستمر: فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
-    print(f"   Cooldown لكل عملة: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة (إلا لو النقاط زادت)")
+    print(f"   📌 ميتكررش العملة إلا لو النقاط زادت")
     print(f"🔔 الإرسال: الأدمن فقط")
     print(f"🔒 Lock نشط ضد الإرسال المزدوج")
     print("="*60)
