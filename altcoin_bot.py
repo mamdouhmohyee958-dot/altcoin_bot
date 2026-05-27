@@ -32,7 +32,7 @@ CMC_LIMIT             = 500
 MIN_SCORE          = 80       # ✅ تم رفعه من 75 إلى 80
 MIN_RVOL           = 2.5
 MAX_PREV_PUMP      = 12.0
-MIN_VOL_FOR_SIGNAL = 2_000_000
+MIN_VOL_FOR_SIGNAL = 500_000   # ✅ v6.5 — خفّضناه لشمول عملات Gate.io الصغيرة اللي عليها فوليم أعلى في منصات تانية
 
 # ==================== اعدادات الفلترة ====================
 MAX_MARKET_CAP            = 2_000_000_000
@@ -75,7 +75,9 @@ PUMP_W_BID_WALL          = 3   # 7) Bid Wall (دعم شراء قوي)
 PUMP_MAX_SCORE           = 22  # المجموع الأقصى
 PUMP_SCORE_STRONG        = 15  # 🚀 STRONG (≥ 68%)
 PUMP_SCORE_MODERATE      = 11  # ⚠️ MODERATE (≥ 50%)
-PUMP_SIGNAL_COOLDOWN_MIN = 60  # 60 دقيقة - تتجدد فقط لو النقاط زادت
+PUMP_SIGNAL_COOLDOWN_MIN = 180 # ✅ v6.4 — 3 ساعات بدل ساعة
+PUMP_RESEND_MIN_INCREASE = 1   # ✅ v6.5 — زيادة نقطة واحدة كافية
+PUMP_RESEND_ON_UPGRADE   = True # ✅ v6.4 — إعادة الإرسال لو ترقّى من MODERATE لـ STRONG
 
 # الشرط الإلزامي: لازم core_indicators يكون متفعل
 PUMP_REQUIRE_CORE        = True
@@ -228,6 +230,165 @@ EXCLUDED_KEYWORDS_IN_SYMBOL = {
 }
 
 EXCLUDED_SUBSTRINGS = ("usd", "btc", "eth", "bnb", "xau", "xag", "gold", "silver")
+
+
+# ════════════════════════════════════════════════════════════════════
+# ✅ v6.3 — فلتر شرعي شامل (Haram Filter)
+# ════════════════════════════════════════════════════════════════════
+# نستبعد العملات اللي طبيعة عملها محرمة:
+# 1. الإقراض بالفائدة (Lending / Borrowing)
+# 2. القمار والمراهنات (Gambling / Betting / Casino)
+# 3. المحتوى الإباحي (Adult / NSFW)
+# 4. الكحول والمخدرات
+# 5. التأمين التجاري والمشتقات
+# 6. الأشياء غير اللائقة دينياً
+
+# ───── 1) Lending / Borrowing (الإقراض بالفائدة) ─────
+HARAM_LENDING_SYMBOLS = {
+    "AAVE", "COMP", "MKR", "DAI", "SDAI",
+    "CRV", "CVX",
+    "MORPHO", "EUL", "BENQI", "QI",
+    "JST", "JUSTLEND",
+    "RDNT", "RADIANT",
+    "VENUS", "XVS", "VAI",
+    "SPELL", "ICE", "MIM",
+    "ALPHA", "ALCX",
+    "TRU", "MPL",
+    "FOLD", "REQ",
+    "CREAM", "ANC",
+    "BIFI", "AUTO",
+    "TND", "FOX",
+    "FRAX", "FXS",
+    "GRO", "ALPACA",
+    "ARTH", "MAHA",
+    "SDT",
+    "BANK",
+}
+
+# ───── 2) Gambling / Betting / Casino / Lottery ─────
+HARAM_GAMBLING_SYMBOLS = {
+    "FUN", "FUNTOKEN",
+    "ROLL", "WINK", "WIN",
+    "EDG", "EDGELESS",
+    "CHP", "CHIPZ",
+    "DICE", "DICEROLL",
+    "BET", "BETKING", "BETSWAP",
+    "CASINO", "CSC",
+    "BNKR", "POKER", "POKERFI",
+    "STAKE",
+    "ZKB",
+    "TGT", "BLOK",
+    "MEGA", "MILLIONS",
+    "POOL", "POOLTOGETHER",
+    "FAIRY", "LOTTO",
+    "LUCK", "LUCKY", "JACKPOT",
+}
+
+# ───── 3) Adult Content / NSFW ─────
+HARAM_ADULT_SYMBOLS = {
+    "VID", "PORN", "SEX", "SEXY", "XXX",
+    "ADULT", "NSFW", "MILF",
+    "PUSSY", "DICK", "COCK", "BOOB",
+    "STRIPPER", "STRIPCHAIN", "STRIP",
+    "ONLYFANS", "ONLYFAN",
+    "CAMS", "CAMGIRL", "CAM",
+    "EROS", "EROTIC", "LUST",
+    "HOOKER", "HOE",
+    "FUCK", "WHORE", "SLUT", "BDSM",
+    "REDLIGHT",
+}
+
+# ───── 4) Alcohol / Drugs ─────
+HARAM_ALCOHOL_SYMBOLS = {
+    "BEER", "WINE", "WHISKEY", "VODKA", "RUM",
+    "ALCOHOL", "BOOZE", "TEQUILA", "GIN",
+    "CANNABIS", "WEED", "GANJA", "MARIJUANA",
+    "HASH", "BLAZE", "BLUNT", "HEMP",
+    "COCAINE", "METH", "MDMA", "LSD",
+    "OPIUM", "HEROIN", "DRUG", "DRUGS",
+    "POTCOIN", "DOPECOIN",
+}
+
+# ───── 5) Inappropriate / Anti-Religion ─────
+HARAM_INAPPROPRIATE_SYMBOLS = {
+    "JESUS", "CHRIST", "DEVIL", "SATAN",
+    "DEMON", "DAEMON", "HELL", "LUCIFER",
+    "666", "ANTICHRIST", "PAGAN",
+}
+
+# ───── Tags المحرمة من CMC ─────
+HARAM_TAGS = {
+    "lending-borrowing", "lending", "yield-farming",
+    "yield-aggregator", "interest-bearing-tokens",
+    "gambling", "betting", "casino",
+    "prediction-markets", "lottery",
+    "adult", "nsfw", "alcohol", "cannabis", "drug",
+    "insurance", "decentralized-insurance",
+    "derivatives", "synthetic-issuer", "perpetuals",
+    "leveraged-tokens", "options", "binary-options",
+}
+
+# ───── Keywords في الاسم ─────
+HARAM_NAME_KEYWORDS = {
+    # Lending / Interest (يكتفي وجودها في الاسم)
+    "lending", "borrow", "loan", "credit", "yield", "apy", "interest",
+    "mortgage", "lender",
+    # Gambling
+    "casino", "gambling", "betting", "betswap", "betfury",
+    "poker", "roulette", "blackjack", "jackpot", "slot",
+    "lottery", "lotto", "wager",
+    # Adult
+    "porn", "xxx", "sexy", "erotic", "nsfw",
+    "onlyfans", "camgirl",
+    # Drugs / Alcohol
+    "cannabis", "marijuana", "alcohol", "whiskey", "vodka",
+    # Insurance / Derivatives
+    "insurance", "perpetual", "synthetic", "leveraged",
+    "derivative",
+}
+
+# Short keywords محتاجة padding لتجنب false positives
+HARAM_SHORT_KEYWORDS = {"bet", "sex", "weed", "drug", "option", "beer", "wine", "adult"}
+
+
+def is_haram_token(symbol, name, tags):
+    """
+    ✅ v6.3 — فحص شرعي شامل
+    يرجع (is_haram: bool, reason: str | None)
+    """
+    sym = (symbol or "").upper().strip()
+    nm  = (name or "").lower().strip()
+
+    # 1) فحص الـ symbols
+    if sym in HARAM_LENDING_SYMBOLS:        return True, "lending/interest"
+    if sym in HARAM_GAMBLING_SYMBOLS:       return True, "gambling"
+    if sym in HARAM_ADULT_SYMBOLS:          return True, "adult"
+    if sym in HARAM_ALCOHOL_SYMBOLS:        return True, "alcohol/drugs"
+    if sym in HARAM_INAPPROPRIATE_SYMBOLS:  return True, "inappropriate"
+
+    # 2) فحص الـ tags من CMC
+    if tags:
+        tags_lower = {t.lower() if isinstance(t, str) else "" for t in tags}
+        for tag in HARAM_TAGS:
+            if tag in tags_lower:
+                return True, f"tag:{tag}"
+
+    # 3) فحص الـ keywords الطويلة (substring match مباشر)
+    for kw in HARAM_NAME_KEYWORDS:
+        if kw in nm:
+            return True, f"name:{kw}"
+
+    # 4) فحص الـ keywords القصيرة (لازم تكون كلمة منفصلة أو بداية/نهاية)
+    nm_padded = f" {nm} "
+    for kw in HARAM_SHORT_KEYWORDS:
+        # match: " bet ", "bet ", " bet", or starts/ends with kw
+        if (f" {kw} " in nm_padded or
+            f" {kw}s " in nm_padded or
+            f"-{kw}" in nm or f"{kw}-" in nm or
+            nm.endswith(kw) or nm.startswith(f"{kw} ")):
+            return True, f"name:{kw}"
+
+    return False, None
 
 
 # ==================== أدوات أساسية ====================
@@ -801,24 +962,22 @@ async def evaluate_pump_signal(session, symbol, current_price):
     core_passed = sum(1 for r in [r1, r2, r3, r4] if r["pass"])
     core_ok = core_passed >= 2
 
-    # ───── ✅ v6.1 — Override: 3 من 4 أساسية = إشارة فورية ─────
+    # ───── ✅ v6.2 — Override: 3+ من 4 أساسية = إشارة دخول STRONG فورية ─────
     core_override = core_passed >= 3
 
     # ───── تصنيف القوة ─────
-    if core_override and total >= PUMP_SCORE_STRONG:
-        # 3+ أساسية + نقاط عالية = STRONG ⭐⭐
+    if core_override:
+        # 3 أو 4 من الأساسية متفعلين = إشارة دخول STRONG (مهما كانت النقاط)
         strength = "STRONG"
         strength_emoji = "\U0001f680"
-        strength_label = f"STRONG — {core_passed}/4 أساسية متفعلة 🔥"
-    elif core_override:
-        # 3+ أساسية مهما كانت النقاط = MODERATE على الأقل
-        strength = "MODERATE"
-        strength_emoji = "\u26a0\ufe0f"
-        strength_label = f"MODERATE — {core_passed}/4 أساسية متفعلة ⭐"
+        if core_passed == 4:
+            strength_label = "STRONG — 4/4 أساسية متفعلة 🔥🔥 إشارة مثالية"
+        else:
+            strength_label = "STRONG — 3/4 أساسية متفعلة 🔥 إشارة دخول"
     elif total >= PUMP_SCORE_STRONG and core_ok:
         strength = "STRONG"
         strength_emoji = "\U0001f680"
-        strength_label = "STRONG — دخول قوي"
+        strength_label = "STRONG — نقاط عالية + أساسية كافية"
     elif total >= PUMP_SCORE_MODERATE and core_ok:
         strength = "MODERATE"
         strength_emoji = "\u26a0\ufe0f"
@@ -1951,7 +2110,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
             logger.error("❌ فشل جلب tickers من Gate.io")
             return
 
-        # 2️⃣ فلتر العملات: فوليم 24h ≥ 5M$ (شرط شبيه بـ 50M$ على Binance Futures)
+        # 2️⃣ فلتر العملات: فوليم 24h ≥ MIN + symbol/name حلال
         candidates = []
         for t in gate_tickers:
             d = parse_gate_ticker(t)
@@ -1959,8 +2118,37 @@ async def check_signals(bot: Bot, target_chat: int = None):
             if d["symbol"] in EXCLUDED_SYMBOLS: continue
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
             if d["price"] <= 0: continue
+            # ✅ v6.3 — فلتر شرعي بدائي على الـ symbol والـ name (بدون tags)
+            haram, reason = is_haram_token(d["symbol"], d.get("name", ""), [])
+            if haram:
+                continue
             candidates.append(d)
         candidates = candidates[:GATE_MAX_CANDIDATES]
+
+        # ✅ v6.3 — إثراء من CMC للحصول على tags ومضاعفة الفلتر الشرعي
+        try:
+            cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+            cmc_by_sym = {c.get("symbol", "").upper(): c for c in (cmc_raw or [])}
+            haram_filtered = 0
+            enriched = []
+            for d in candidates:
+                cmc = cmc_by_sym.get(d["symbol"].upper())
+                if cmc:
+                    tags = cmc.get("tags", [])
+                    cmc_name = cmc.get("name", d.get("name", ""))
+                    # فحص شرعي ثاني مع الـ tags
+                    haram, reason = is_haram_token(d["symbol"], cmc_name, tags)
+                    if haram:
+                        haram_filtered += 1
+                        continue
+                    d["name"] = cmc_name
+                    d["tags"] = tags
+                enriched.append(d)
+            candidates = enriched
+            logger.info(f"🚫 فلتر شرعي: استبعد {haram_filtered} عملة من CMC tags")
+        except Exception as e:
+            logger.warning(f"إثراء CMC فشل: {e} — نكمل بالـ symbol/name فقط")
+
         logger.info(f"📋 سيتم فحص {len(candidates)} عملة (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)")
 
         # 3️⃣ تقييم الـ 7 شروط لكل عملة بالتوازي
@@ -1985,28 +2173,47 @@ async def check_signals(bot: Bot, target_chat: int = None):
     all_results     = [r for r in results if r and not isinstance(r, Exception)]
     main_signals    = [r for r in all_results if r["strength"] in ("STRONG", "MODERATE")]
 
-    # 5️⃣ إزالة المكررات + إعادة إرسال فقط لو النقاط زادت
+    # ✅ v6.4 — diagnostic: نعرض كم عملة وصلت لكل مستوى
+    strong_count   = sum(1 for r in all_results if r["strength"] == "STRONG")
+    moderate_count = sum(1 for r in all_results if r["strength"] == "MODERATE")
+    ignored_count  = sum(1 for r in all_results if r["strength"] is None)
+    logger.info(f"📊 نتائج الفحص: STRONG={strong_count}, MODERATE={moderate_count}, ignored={ignored_count}")
+
+    # 5️⃣ إزالة المكررات + إعادة إرسال بشروط صارمة
     fresh_main = []
     for r in main_signals:
         sym = r["symbol"]
         if sym in seen_signals:
             entry = seen_signals[sym]
-            # entry قد يكون datetime (الإصدار القديم) أو tuple (datetime, score)
+            # entry: tuple (datetime, score, strength) | tuple (datetime, score) | datetime
+            last_strength = None
             if isinstance(entry, tuple):
-                last_time, last_score = entry
+                if len(entry) >= 3:
+                    last_time, last_score, last_strength = entry[0], entry[1], entry[2]
+                else:
+                    last_time, last_score = entry[0], entry[1]
             else:
                 last_time, last_score = entry, 0
             elapsed = (datetime.now() - last_time).total_seconds()
             within_cooldown = elapsed < PUMP_SIGNAL_COOLDOWN_MIN * 60
-            score_increased = r["score"] > last_score  # ✅ شرط الزيادة
-            # نُرسل لو:
-            #   - خرج من الـ cooldown، أو
-            #   - النقاط زادت (مهما كان الوقت)
-            if within_cooldown and not score_increased:
-                logger.info(f"تخطي {sym} — cooldown ({int(elapsed/60)}m, score={r['score']} ≤ {last_score})")
+
+            # ✅ v6.4 — شروط إعادة الإرسال أصرم
+            # 1) ترقية من MODERATE إلى STRONG
+            upgraded = (PUMP_RESEND_ON_UPGRADE and
+                        last_strength == "MODERATE" and
+                        r["strength"] == "STRONG")
+            # 2) النقاط زادت بـ 3+ نقاط على الأقل
+            major_increase = (r["score"] - last_score) >= PUMP_RESEND_MIN_INCREASE
+
+            if within_cooldown and not upgraded and not major_increase:
+                logger.info(f"تخطي {sym} — cooldown ({int(elapsed/60)}m, "
+                            f"score={r['score']} vs {last_score}, "
+                            f"strength={r['strength']} vs {last_strength})")
                 continue
-            if score_increased:
-                logger.info(f"📈 {sym} — النقاط زادت ({last_score} → {r['score']}) — إعادة إرسال")
+            if upgraded:
+                logger.info(f"⬆️ {sym} — ترقية من {last_strength} إلى {r['strength']} — إرسال")
+            elif major_increase:
+                logger.info(f"📈 {sym} — النقاط زادت {last_score}→{r['score']} (+{r['score']-last_score}) — إرسال")
         fresh_main.append(r)
 
     # 6️⃣ ترتيب: الأقوى أولاً
@@ -2016,16 +2223,18 @@ async def check_signals(bot: Bot, target_chat: int = None):
         logger.info(f"✅ لا توجد إشارات بامب جديدة (فحص {len(candidates)} عملة)")
         return
 
-    # 7️⃣ إرسال الإشارات
+    # 7️⃣ إرسال الإشارات — كل العملات المؤهلة (حد أقصى 25 لتجنب spam)
     sent_count = 0
-    MAX_SIGNALS = 10
+    MAX_SIGNALS = 25  # ✅ v6.5 — زدناه من 10 لـ 25
+    if len(fresh_main) > MAX_SIGNALS:
+        logger.warning(f"⚠️  {len(fresh_main)} إشارة مؤهلة — سنرسل الأقوى {MAX_SIGNALS}")
     for r in fresh_main[:MAX_SIGNALS]:
         try:
             msg = format_pump_signal_message(r)
             await bot.send_message(chat_id=chat_target, text=msg,
                                     disable_web_page_preview=True)
-            # نخزن الوقت + النقاط (للسماح بإعادة الإرسال لو زادت)
-            seen_signals[r["symbol"]] = (datetime.now(), r["score"])
+            # نخزن الوقت + النقاط + القوة (للسماح بإعادة الإرسال لو زادت أو ترقّت)
+            seen_signals[r["symbol"]] = (datetime.now(), r["score"], r["strength"])
             sent_count += 1
             await asyncio.sleep(0.7)
         except Exception as e:
@@ -2033,13 +2242,15 @@ async def check_signals(bot: Bot, target_chat: int = None):
 
     logger.info(f"📤 تم إرسال {sent_count} إشارة")
     previous_signals = {r["symbol"]: r for r in fresh_main}
+    save_seen_signals()   # ✅ v6.4 — حفظ بعد كل دفعة إشارات
 
 
 
 # ============================================================
 # نظام seen coins
 # ============================================================
-SEEN_FILE  = "seen_coins.json"
+SEEN_FILE         = "seen_coins.json"
+SEEN_SIGNALS_FILE = "seen_signals.json"   # ✅ v6.4
 
 def load_seen_coins():
     global seen_coins
@@ -2058,6 +2269,46 @@ def save_seen_coins():
             json.dump({k: v.isoformat() for k, v in seen_coins.items()}, f)
     except Exception as e:
         logger.error(f"خطأ حفظ seen_coins: {e}")
+
+
+# ✅ v6.4 — حفظ/تحميل seen_signals (للحفاظ على cooldown بين إعادات التشغيل)
+def load_seen_signals():
+    global seen_signals
+    try:
+        if os.path.exists(SEEN_SIGNALS_FILE):
+            with open(SEEN_SIGNALS_FILE, "r") as f:
+                data = json.load(f)
+            seen_signals = {}
+            for k, v in data.items():
+                # v: [timestamp_iso, score, strength]
+                if isinstance(v, list) and len(v) >= 3:
+                    seen_signals[k] = (datetime.fromisoformat(v[0]), v[1], v[2])
+                elif isinstance(v, list) and len(v) == 2:
+                    seen_signals[k] = (datetime.fromisoformat(v[0]), v[1], None)
+            # نُزيل القديم جداً (أكثر من 24 ساعة) لتنظيف الملف
+            now = datetime.now()
+            seen_signals = {
+                k: v for k, v in seen_signals.items()
+                if (now - v[0]).total_seconds() < 86400
+            }
+            logger.info(f"✅ تم تحميل {len(seen_signals)} إشارة من seen_signals")
+    except Exception as e:
+        logger.error(f"خطأ تحميل seen_signals: {e}")
+
+def save_seen_signals():
+    try:
+        out = {}
+        for k, v in seen_signals.items():
+            if isinstance(v, tuple) and len(v) >= 3:
+                out[k] = [v[0].isoformat(), v[1], v[2]]
+            elif isinstance(v, tuple) and len(v) == 2:
+                out[k] = [v[0].isoformat(), v[1], None]
+            else:
+                out[k] = [v.isoformat() if isinstance(v, datetime) else str(v), 0, None]
+        with open(SEEN_SIGNALS_FILE, "w") as f:
+            json.dump(out, f)
+    except Exception as e:
+        logger.error(f"خطأ حفظ seen_signals: {e}")
 
 
 # ============================================================
@@ -2742,6 +2993,7 @@ def main():
     app.add_handler(CommandHandler("chatid",  cmd_chatid))
 
     load_seen_coins()
+    load_seen_signals()   # ✅ v6.4
 
     # ✅ التأكد من إضافة الـ jobs مرة واحدة فقط
     jq = app.job_queue
