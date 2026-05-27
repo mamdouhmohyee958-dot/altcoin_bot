@@ -32,7 +32,7 @@ CMC_LIMIT             = 500
 MIN_SCORE          = 80       # ✅ تم رفعه من 75 إلى 80
 MIN_RVOL           = 2.5
 MAX_PREV_PUMP      = 12.0
-MIN_VOL_FOR_SIGNAL = 500_000   # ✅ v6.5 — خفّضناه لشمول عملات Gate.io الصغيرة اللي عليها فوليم أعلى في منصات تانية
+MIN_VOL_FOR_SIGNAL = 500_000  # ✅ v6.5 — خفّضناه من 2M لشمول عملات Gate.io الصغيرة
 
 # ==================== اعدادات الفلترة ====================
 MAX_MARKET_CAP            = 2_000_000_000
@@ -75,9 +75,9 @@ PUMP_W_BID_WALL          = 3   # 7) Bid Wall (دعم شراء قوي)
 PUMP_MAX_SCORE           = 22  # المجموع الأقصى
 PUMP_SCORE_STRONG        = 15  # 🚀 STRONG (≥ 68%)
 PUMP_SCORE_MODERATE      = 11  # ⚠️ MODERATE (≥ 50%)
-PUMP_SIGNAL_COOLDOWN_MIN = 180 # ✅ v6.4 — 3 ساعات بدل ساعة
-PUMP_RESEND_MIN_INCREASE = 1   # ✅ v6.5 — زيادة نقطة واحدة كافية
-PUMP_RESEND_ON_UPGRADE   = True # ✅ v6.4 — إعادة الإرسال لو ترقّى من MODERATE لـ STRONG
+PUMP_SIGNAL_COOLDOWN_MIN = 180 # (مرجعي فقط — لم يعد مستخدماً في v6.5)
+PUMP_RESEND_MIN_INCREASE = 1   # ✅ v6.5 — نقطة واحدة كافية
+PUMP_RESEND_ON_UPGRADE   = False # ✅ v6.5 — الترقية وحدها ميرضاش، لازم زيادة فعلية في النقاط
 
 # الشرط الإلزامي: لازم core_indicators يكون متفعل
 PUMP_REQUIRE_CORE        = True
@@ -2179,41 +2179,30 @@ async def check_signals(bot: Bot, target_chat: int = None):
     ignored_count  = sum(1 for r in all_results if r["strength"] is None)
     logger.info(f"📊 نتائج الفحص: STRONG={strong_count}, MODERATE={moderate_count}, ignored={ignored_count}")
 
-    # 5️⃣ إزالة المكررات + إعادة إرسال بشروط صارمة
+    # 5️⃣ ✅ v6.5 — قاعدة بسيطة: ميتكررش الإشارة لنفس العملة إلا لو النقاط زادت
+    # لا cooldown زمني — مهما طال الوقت، لو نفس النقاط أو أقل، تخطي
     fresh_main = []
     for r in main_signals:
         sym = r["symbol"]
         if sym in seen_signals:
             entry = seen_signals[sym]
             # entry: tuple (datetime, score, strength) | tuple (datetime, score) | datetime
-            last_strength = None
             if isinstance(entry, tuple):
-                if len(entry) >= 3:
-                    last_time, last_score, last_strength = entry[0], entry[1], entry[2]
+                if len(entry) >= 2:
+                    last_score = entry[1]
                 else:
-                    last_time, last_score = entry[0], entry[1]
+                    last_score = 0
             else:
-                last_time, last_score = entry, 0
-            elapsed = (datetime.now() - last_time).total_seconds()
-            within_cooldown = elapsed < PUMP_SIGNAL_COOLDOWN_MIN * 60
+                last_score = 0
 
-            # ✅ v6.4 — شروط إعادة الإرسال أصرم
-            # 1) ترقية من MODERATE إلى STRONG
-            upgraded = (PUMP_RESEND_ON_UPGRADE and
-                        last_strength == "MODERATE" and
-                        r["strength"] == "STRONG")
-            # 2) النقاط زادت بـ 3+ نقاط على الأقل
-            major_increase = (r["score"] - last_score) >= PUMP_RESEND_MIN_INCREASE
-
-            if within_cooldown and not upgraded and not major_increase:
-                logger.info(f"تخطي {sym} — cooldown ({int(elapsed/60)}m, "
-                            f"score={r['score']} vs {last_score}, "
-                            f"strength={r['strength']} vs {last_strength})")
+            score_diff = r["score"] - last_score
+            if score_diff < PUMP_RESEND_MIN_INCREASE:
+                logger.info(f"⏸ تخطي {sym} — النقاط {r['score']} ≤ آخر إشارة {last_score} "
+                            f"(فرق: {score_diff:+d})")
                 continue
-            if upgraded:
-                logger.info(f"⬆️ {sym} — ترقية من {last_strength} إلى {r['strength']} — إرسال")
-            elif major_increase:
-                logger.info(f"📈 {sym} — النقاط زادت {last_score}→{r['score']} (+{r['score']-last_score}) — إرسال")
+            logger.info(f"📈 {sym} — النقاط زادت {last_score}→{r['score']} (+{score_diff}) — إرسال")
+        else:
+            logger.info(f"🆕 {sym} — إشارة جديدة بـ {r['score']} نقطة")
         fresh_main.append(r)
 
     # 6️⃣ ترتيب: الأقوى أولاً
@@ -2223,11 +2212,9 @@ async def check_signals(bot: Bot, target_chat: int = None):
         logger.info(f"✅ لا توجد إشارات بامب جديدة (فحص {len(candidates)} عملة)")
         return
 
-    # 7️⃣ إرسال الإشارات — كل العملات المؤهلة (حد أقصى 25 لتجنب spam)
+    # 7️⃣ إرسال الإشارات
     sent_count = 0
-    MAX_SIGNALS = 25  # ✅ v6.5 — زدناه من 10 لـ 25
-    if len(fresh_main) > MAX_SIGNALS:
-        logger.warning(f"⚠️  {len(fresh_main)} إشارة مؤهلة — سنرسل الأقوى {MAX_SIGNALS}")
+    MAX_SIGNALS = 10
     for r in fresh_main[:MAX_SIGNALS]:
         try:
             msg = format_pump_signal_message(r)
