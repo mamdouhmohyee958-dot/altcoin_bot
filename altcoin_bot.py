@@ -1941,7 +1941,7 @@ async def send_volume_report(bot: Bot, target_chat: int = None):
 # ════════════════════════════════════════════════════════════════════
 async def check_signals(bot: Bot, target_chat: int = None):
     global previous_signals
-    logger.info("🚀 فحص إشارات البامب (Pump Detection v5.0)...")
+    logger.info("🚀 فحص إشارات البامب (Pump Detection v6.0)...")
     chat_target = target_chat if target_chat else int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
@@ -2550,25 +2550,25 @@ async def continuous_signal_scanner(bot: Bot):
 # ==================== أوامر البوت ====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 Pump Detection Bot v5.0 — Gate.io\n"
+        "🚀 Pump Detection Bot v6.0 — Gate.io\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "نظام كشف البامب قبل حدوثه عبر 7 شروط متقدمة:\n\n"
-        f"1️⃣ Funding Rate Anomaly        ({PUMP_W_FUNDING_RATE} pts)\n"
-        f"2️⃣ CVD Divergence                ({PUMP_W_CVD_DIVERGENCE} pts)\n"
-        f"4️⃣ Taker Buy Ratio               ({PUMP_W_TAKER_BUY_RATIO} pts)\n"
-        f"5️⃣ Order Book Imbalance        ({PUMP_W_OB_IMBALANCE} pts)\n"
-        f"6️⃣ Volume Anomaly                ({PUMP_W_VOLUME_ANOMALY} pt)\n"
-        f"7️⃣ Lower Wick Absorption       ({PUMP_W_WICK_ABSORPTION} pt)\n"
-        f"8️⃣ Liquidity Sweep                ({PUMP_W_LIQ_SWEEP} pts)\n\n"
+        "نظام كشف البامب — 7 شروط قوية:\n\n"
+        "⭐ الشروط الأساسية (الأهم):\n"
+        f"1️⃣ Funding Rate Anomaly     ({PUMP_W_FUNDING_RATE} pts)\n"
+        f"2️⃣ CVD Divergence            ({PUMP_W_CVD_DIVERGENCE} pts)\n"
+        f"3️⃣ Taker Buy Ratio           ({PUMP_W_TAKER_BUY_RATIO} pts)\n"
+        f"4️⃣ Order Book Imbalance      ({PUMP_W_OB_IMBALANCE} pts)\n\n"
+        "📊 الشروط التكميلية:\n"
+        f"5️⃣ Volume Acceleration       ({PUMP_W_VOL_ACCEL} pts)\n"
+        f"6️⃣ Sustained Buy Pressure    ({PUMP_W_SUSTAINED_BUY} pts)\n"
+        f"7️⃣ Bid Wall (دعم قوي)         ({PUMP_W_BID_WALL} pts)\n\n"
         f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
-        f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n\n"
+        f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n"
+        f"⭐ Override: 3/4 أساسية = إشارة فورية\n\n"
         f"🌐 المصدر: كل عملات Gate.io USDT\n"
         f"   فلتر: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
         f"🔄 سكان مستمر — فاصل {SIGNAL_LOOP_GAP_SECONDS}ث\n"
-        f"⏱ Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة لكل عملة\n\n"
-        "ℹ️ ملاحظات:\n"
-        "• Spoofing مُلغى (يحتاج WebSocket)\n"
-        "• Liquidity Sweep بديل عن Liquidation Cluster\n\n"
+        f"⏱ Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN}m (إلا لو النقاط زادت)\n\n"
         "الأوامر:\n"
         "/info SYMBOL — توكنوميكس\n"
         "/vol SYMBOL  — حجم تداول\n"
@@ -2666,14 +2666,16 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE} نقاط\n"
         f"   Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة\n\n"
         f"🔬 الشروط النشطة (7):\n"
+        f"   ⭐ الأساسية:\n"
         f"   1. Funding Rate Anomaly\n"
         f"   2. CVD Divergence\n"
-        f"   4. Taker Buy Ratio\n"
-        f"   5. Order Book Imbalance\n"
-        f"   6. Volume Anomaly\n"
-        f"   7. Lower Wick Absorption\n"
-        f"   8. Liquidity Sweep\n\n"
-        f"⛔ Spoofing: مُلغى (يحتاج WebSocket)\n"
+        f"   3. Taker Buy Ratio\n"
+        f"   4. Order Book Imbalance\n"
+        f"   📊 التكميلية:\n"
+        f"   5. Volume Acceleration\n"
+        f"   6. Sustained Buy Pressure\n"
+        f"   7. Bid Wall (دعم شراء قوي)\n\n"
+        f"⭐ Override: 3/4 أساسية = إشارة فورية\n"
         f"🔒 Lock نشط ضد الإرسال المزدوج"
     )
 
@@ -2697,7 +2699,7 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *Pump Detection Bot v5.0 — Gate.io*\n"
+                "🟢 *Pump Detection Bot v6.0 — Gate.io*\n"
                 f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
                 f"🌐 يفحص كل عملات Gate.io USDT (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)\n"
                 f"⚡ 7 شروط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
@@ -2752,26 +2754,28 @@ def main():
     # السكان يبدأ من post_init كـ background task
 
     print("="*60)
-    print("🚀 Pump Detection Bot v5.0 — Gate.io Edition")
+    print("🚀 Pump Detection Bot v6.0 — Gate.io Edition")
     print(f"🌐 المصدر: كل Gate.io USDT (~{GATE_MAX_CANDIDATES} عملة)")
     print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
     print(f"")
     print(f"🚨 نظام البامب (7 شروط):")
+    print(f"   ⭐ الأساسية:")
     print(f"   1. Funding Rate Anomaly      ({PUMP_W_FUNDING_RATE} pts)")
     print(f"   2. CVD Divergence             ({PUMP_W_CVD_DIVERGENCE} pts)")
-    print(f"   3. Spoofing                   ❌ مُلغى (يحتاج WebSocket)")
-    print(f"   4. Taker Buy Ratio            ({PUMP_W_TAKER_BUY_RATIO} pts)")
-    print(f"   5. Order Book Imbalance       ({PUMP_W_OB_IMBALANCE} pts)")
-    print(f"   6. Volume Anomaly             ({PUMP_W_VOLUME_ANOMALY} pts)")
-    print(f"   7. Lower Wick Absorption      ({PUMP_W_WICK_ABSORPTION} pts)")
-    print(f"   8. Liquidity Sweep (بديل)     ({PUMP_W_LIQ_SWEEP} pts)")
+    print(f"   3. Taker Buy Ratio            ({PUMP_W_TAKER_BUY_RATIO} pts)")
+    print(f"   4. Order Book Imbalance       ({PUMP_W_OB_IMBALANCE} pts)")
+    print(f"   📊 التكميلية:")
+    print(f"   5. Volume Acceleration        ({PUMP_W_VOL_ACCEL} pts)")
+    print(f"   6. Sustained Buy Pressure     ({PUMP_W_SUSTAINED_BUY} pts)")
+    print(f"   7. Bid Wall                   ({PUMP_W_BID_WALL} pts)")
     print(f"   ───────────────────────────")
     print(f"   المجموع: {PUMP_MAX_SCORE} نقاط")
     print(f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG}  |  ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}")
+    print(f"   ⭐ Override: 3/4 أساسية = إشارة فورية")
     print(f"")
     print(f"🔄 السكان المستمر: فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
-    print(f"   Cooldown لكل عملة: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة")
+    print(f"   Cooldown لكل عملة: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة (إلا لو النقاط زادت)")
     print(f"🔔 الإرسال: الأدمن فقط")
     print(f"🔒 Lock نشط ضد الإرسال المزدوج")
     print("="*60)
