@@ -19,7 +19,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
-TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
+TELEGRAM_TOKEN = "8608851079:AAErIr1R1l7zl4odFE1AH8uUUOHQjxiwYwI"
 ADMIN_CHAT_ID  = "6914157653"
 CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
 
