@@ -157,163 +157,6 @@ EXCLUDED_SYMBOLS = {
 }
 
 
-# ════════════════════════════════════════════════════════════════════
-# ✅ v6.3 — فلتر شرعي شامل (Haram Filter)
-# ════════════════════════════════════════════════════════════════════
-# نستبعد العملات اللي طبيعة عملها محرمة:
-# 1. الإقراض بالفائدة (Lending / Borrowing)
-# 2. القمار والمراهنات (Gambling / Betting / Casino)
-# 3. المحتوى الإباحي (Adult / NSFW)
-# 4. الكحول والمخدرات
-# 5. التأمين التجاري والمشتقات
-# 6. الأشياء غير اللائقة دينياً
-
-# ───── 1) Lending / Borrowing (الإقراض بالفائدة) ─────
-HARAM_LENDING_SYMBOLS = {
-    "AAVE", "COMP", "MKR", "DAI", "SDAI",
-    "CRV", "CVX",
-    "MORPHO", "EUL", "BENQI", "QI",
-    "JST", "JUSTLEND",
-    "RDNT", "RADIANT",
-    "VENUS", "XVS", "VAI",
-    "SPELL", "ICE", "MIM",
-    "ALPHA", "ALCX",
-    "TRU", "MPL",
-    "FOLD", "REQ",
-    "CREAM", "ANC",
-    "BIFI", "AUTO",
-    "TND", "FOX",
-    "FRAX", "FXS",
-    "GRO", "ALPACA",
-    "ARTH", "MAHA",
-    "SDT",
-    "BANK",
-}
-
-# ───── 2) Gambling / Betting / Casino / Lottery ─────
-HARAM_GAMBLING_SYMBOLS = {
-    "FUN", "FUNTOKEN",
-    "ROLL", "WINK", "WIN",
-    "EDG", "EDGELESS",
-    "CHP", "CHIPZ",
-    "DICE", "DICEROLL",
-    "BET", "BETKING", "BETSWAP",
-    "CASINO", "CSC",
-    "BNKR", "POKER", "POKERFI",
-    "STAKE",
-    "ZKB",
-    "TGT", "BLOK",
-    "MEGA", "MILLIONS",
-    "POOL", "POOLTOGETHER",
-    "FAIRY", "LOTTO",
-    "LUCK", "LUCKY", "JACKPOT",
-}
-
-# ───── 3) Adult Content / NSFW ─────
-HARAM_ADULT_SYMBOLS = {
-    "VID", "PORN", "SEX", "SEXY", "XXX",
-    "ADULT", "NSFW", "MILF",
-    "PUSSY", "DICK", "COCK", "BOOB",
-    "STRIPPER", "STRIPCHAIN", "STRIP",
-    "ONLYFANS", "ONLYFAN",
-    "CAMS", "CAMGIRL", "CAM",
-    "EROS", "EROTIC", "LUST",
-    "HOOKER", "HOE",
-    "FUCK", "WHORE", "SLUT", "BDSM",
-    "REDLIGHT",
-}
-
-# ───── 4) Alcohol / Drugs ─────
-HARAM_ALCOHOL_SYMBOLS = {
-    "BEER", "WINE", "WHISKEY", "VODKA", "RUM",
-    "ALCOHOL", "BOOZE", "TEQUILA", "GIN",
-    "CANNABIS", "WEED", "GANJA", "MARIJUANA",
-    "HASH", "BLAZE", "BLUNT", "HEMP",
-    "COCAINE", "METH", "MDMA", "LSD",
-    "OPIUM", "HEROIN", "DRUG", "DRUGS",
-    "POTCOIN", "DOPECOIN",
-}
-
-# ───── 5) Inappropriate / Anti-Religion ─────
-HARAM_INAPPROPRIATE_SYMBOLS = {
-    "JESUS", "CHRIST", "DEVIL", "SATAN",
-    "DEMON", "DAEMON", "HELL", "LUCIFER",
-    "666", "ANTICHRIST", "PAGAN",
-}
-
-# ───── Tags المحرمة من CMC ─────
-HARAM_TAGS = {
-    "lending-borrowing", "lending", "yield-farming",
-    "yield-aggregator", "interest-bearing-tokens",
-    "gambling", "betting", "casino",
-    "prediction-markets", "lottery",
-    "adult", "nsfw", "alcohol", "cannabis", "drug",
-    "insurance", "decentralized-insurance",
-    "derivatives", "synthetic-issuer", "perpetuals",
-    "leveraged-tokens", "options", "binary-options",
-}
-
-# ───── Keywords في الاسم ─────
-HARAM_NAME_KEYWORDS = {
-    # Lending / Interest (يكتفي وجودها في الاسم)
-    "lending", "borrow", "loan", "credit", "yield", "apy", "interest",
-    "mortgage", "lender",
-    # Gambling
-    "casino", "gambling", "betting", "betswap", "betfury",
-    "poker", "roulette", "blackjack", "jackpot", "slot",
-    "lottery", "lotto", "wager",
-    # Adult
-    "porn", "xxx", "sexy", "erotic", "nsfw",
-    "onlyfans", "camgirl",
-    # Drugs / Alcohol
-    "cannabis", "marijuana", "alcohol", "whiskey", "vodka",
-    # Insurance / Derivatives
-    "insurance", "perpetual", "synthetic", "leveraged",
-    "derivative",
-}
-
-# Short keywords محتاجة padding لتجنب false positives
-HARAM_SHORT_KEYWORDS = {"bet", "sex", "weed", "drug", "option", "beer", "wine", "adult"}
-
-
-def is_haram_token(symbol, name, tags):
-    """
-    ✅ v6.3 — فحص شرعي شامل
-    يرجع (is_haram: bool, reason: str | None)
-    """
-    sym = (symbol or "").upper().strip()
-    nm  = (name or "").lower().strip()
-
-    # 1) فحص الـ symbols
-    if sym in HARAM_LENDING_SYMBOLS:        return True, "lending/interest"
-    if sym in HARAM_GAMBLING_SYMBOLS:       return True, "gambling"
-    if sym in HARAM_ADULT_SYMBOLS:          return True, "adult"
-    if sym in HARAM_ALCOHOL_SYMBOLS:        return True, "alcohol/drugs"
-    if sym in HARAM_INAPPROPRIATE_SYMBOLS:  return True, "inappropriate"
-
-    # 2) فحص الـ tags من CMC
-    if tags:
-        tags_lower = {t.lower() if isinstance(t, str) else "" for t in tags}
-        for tag in HARAM_TAGS:
-            if tag in tags_lower:
-                return True, f"tag:{tag}"
-
-    # 3) فحص الـ keywords الطويلة (substring match مباشر)
-    for kw in HARAM_NAME_KEYWORDS:
-        if kw in nm:
-            return True, f"name:{kw}"
-
-    # 4) فحص الـ keywords القصيرة (لازم تكون كلمة منفصلة أو بداية/نهاية)
-    nm_padded = f" {nm} "
-    for kw in HARAM_SHORT_KEYWORDS:
-        # match: " bet ", "bet ", " bet", or starts/ends with kw
-        if (f" {kw} " in nm_padded or
-            f" {kw}s " in nm_padded or
-            f"-{kw}" in nm or f"{kw}-" in nm or
-            nm.endswith(kw) or nm.startswith(f"{kw} ")):
-            return True, f"name:{kw}"
-
-    return False, None
 
 def fmt_price(p):
     if p >= 1:     return f"${p:.4f}"
@@ -522,7 +365,7 @@ async def fetch_gate_orderbook(session, symbol, limit=20):
 
 
 # ════════════════════════════════════════════════════════════════════
-# ✅ v5.0 — تقييم الـ 7 شروط (8 - 1 ملغى = 7)
+# ✅ v7.0 — تقييم الـ 10 شروط
 # ════════════════════════════════════════════════════════════════════
 
 def eval_funding_rate(funding_rate):
@@ -888,7 +731,7 @@ def eval_bid_wall(ob, current_price):
 
 
 # ════════════════════════════════════════════════════════════════════
-# ✅ v6.0 — المحرك الرئيسي للبامب (7 شروط)
+# ✅ v7.0 — المحرك الرئيسي للبامب (10 شروط)
 # ════════════════════════════════════════════════════════════════════
 
 async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
@@ -1039,7 +882,7 @@ def format_pump_signal_message(result):
 
 
 # ════════════════════════════════════════════════════════════════════
-# ✅ v5.0 — فحص إشارات البامب (الـ 7 شروط من ملف prompt)
+# ✅ v7.0 — فحص إشارات البامب (الـ 10 شروط)
 # ════════════════════════════════════════════════════════════════════
 async def check_signals(bot: Bot, target_chat: int = None):
     global previous_signals
@@ -1053,7 +896,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
             logger.error("❌ فشل جلب tickers من Gate.io")
             return
 
-        # 2️⃣ فلتر العملات: فوليم 24h ≥ MIN + symbol/name حلال
+        # 2️⃣ فلتر العملات: فوليم 24h ≥ MIN
         candidates = []
         for t in gate_tickers:
             d = parse_gate_ticker(t)
@@ -1061,40 +904,24 @@ async def check_signals(bot: Bot, target_chat: int = None):
             if d["symbol"] in EXCLUDED_SYMBOLS: continue
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
             if d["price"] <= 0: continue
-            # ✅ v6.3 — فلتر شرعي بدائي على الـ symbol والـ name (بدون tags)
-            haram, reason = is_haram_token(d["symbol"], d.get("name", ""), [])
-            if haram:
-                continue
             candidates.append(d)
         candidates = candidates[:GATE_MAX_CANDIDATES]
 
-        # ✅ v6.3 — إثراء من CMC للحصول على tags ومضاعفة الفلتر الشرعي
+        # إثراء من CMC للحصول على الاسم الكامل والـ tags (عرض فقط)
         try:
             cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
             cmc_by_sym = {c.get("symbol", "").upper(): c for c in (cmc_raw or [])}
-            haram_filtered = 0
-            enriched = []
             for d in candidates:
                 cmc = cmc_by_sym.get(d["symbol"].upper())
                 if cmc:
-                    tags = cmc.get("tags", [])
-                    cmc_name = cmc.get("name", d.get("name", ""))
-                    # فحص شرعي ثاني مع الـ tags
-                    haram, reason = is_haram_token(d["symbol"], cmc_name, tags)
-                    if haram:
-                        haram_filtered += 1
-                        continue
-                    d["name"] = cmc_name
-                    d["tags"] = tags
-                enriched.append(d)
-            candidates = enriched
-            logger.info(f"🚫 فلتر شرعي: استبعد {haram_filtered} عملة من CMC tags")
+                    d["name"] = cmc.get("name", d.get("name", ""))
+                    d["tags"] = cmc.get("tags", [])
         except Exception as e:
-            logger.warning(f"إثراء CMC فشل: {e} — نكمل بالـ symbol/name فقط")
+            logger.warning(f"إثراء CMC فشل: {e} — نكمل بالأسماء من Gate فقط")
 
         logger.info(f"📋 سيتم فحص {len(candidates)} عملة (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)")
 
-        # 3️⃣ تقييم الـ 7 شروط لكل عملة بالتوازي
+        # 3️⃣ تقييم الـ 10 شروط لكل عملة بالتوازي
         sem = asyncio.Semaphore(GATE_PARALLEL_LIMIT)
         async def analyze(coin):
             async with sem:
@@ -1388,10 +1215,10 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *Pump Detection Bot v6.0 — Gate.io*\n"
+                "🟢 *Pump Detection Bot v7.0 — Gate.io*\n"
                 f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
                 f"🌐 يفحص كل عملات Gate.io USDT (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)\n"
-                f"⚡ 7 شروط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
+                f"⚡ 10 شروط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
                 f"🚀 STRONG ≥ {PUMP_SCORE_STRONG} | ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}"
             ),
             parse_mode="Markdown",
