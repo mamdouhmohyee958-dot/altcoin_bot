@@ -426,14 +426,22 @@ async def fetch_gate_funding_rate(session, symbol):
     """
     الشرط 1: Gate.io futures funding rate
     Returns: float (e.g. -0.0012 لـ -0.12%) أو None
+    Response format: [{"t": timestamp, "r": "0.0001"}]
     """
     url = "https://api.gateio.ws/api/v4/futures/usdt/funding_rate"
     params = {"contract": f"{symbol}_USDT", "limit": 1}
     try:
         async with session.get(url, params=params,
                                timeout=aiohttp.ClientTimeout(total=6)) as r:
-            if r.status != 200: return None
+            if r.status != 200:
+                return None
             data = await r.json()
+        if not data or not isinstance(data, list) or len(data) == 0:
+            return None
+        rate = data[0].get("r")
+        if rate is None:
+            return None
+        return float(rate)
     except Exception:
         return None
 
