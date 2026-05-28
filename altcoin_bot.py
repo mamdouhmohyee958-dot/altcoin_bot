@@ -1,9 +1,10 @@
 """
-🚀 Pump Detection Bot v6.0 — Gate.io Edition
-نظام كشف البامب بـ 7 شروط فقط (بنفس المدخلات الأصلية):
-  ⭐ الأساسية: Funding Rate, CVD Divergence, Taker Buy Ratio, Order Book Imbalance
-  📊 التكميلية: Volume Acceleration, Sustained Buy Pressure, Bid Wall
-السكان المستمر يفحص كل عملات Gate.io USDT ويرسل الإشارات للأدمن.
+🚀 Pump Detection Bot v7.0 — Gate.io Edition
+نظام كشف البامب بـ 10 شروط (بنفس المدخلات الأصلية):
+  ⭐ الأساسية (4): Funding Rate, CVD Divergence, Taker Buy Ratio, Order Book Imbalance
+  📊 التكميلية (6): Volume Acceleration, Bid Wall, Whale Accumulation,
+                    EMA21 Crossover, Multi-TF Buy Pressure, Short Liquidation
+السكان المستمر يفحص كل عملات Gate.io USDT (فوليم ≥ $1M) ويرسل الإشارات للأدمن.
 الأوامر: /start, /status, /chatid
 """
 
@@ -26,20 +27,20 @@ CMC_LIMIT             = 1000
 
 # ==================== اعدادات الاشارات ====================
 MIN_SCORE          = 80       # ✅ تم رفعه من 75 إلى 80
-MIN_VOL_FOR_SIGNAL = 2_000_000
+MIN_VOL_FOR_SIGNAL = 1_000_000
 
 # ✅ جديد v3.1: سكان البامب المستمر
 SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
 SIGNAL_LOOP_ERR_GAP     = 30      # فاصل بعد خطأ
 SIGNAL_COOLDOWN_HOURS     = 6     # كان 24h — قللناه عشان السكان المستمر
-GATE_MAX_CANDIDATES       = 1500       # سقف عدد العملات في الفحص الواحد
+GATE_MAX_CANDIDATES       = 5000       # ✅ فحص كل عملات Gate.io (لا يوجد قص فعلي)
 GATE_PARALLEL_LIMIT       = 25         # طلبات كلاينز متوازية (زدناها لـ 25)
 
 # ════════════════════════════════════════════════════════════════════
-# ✅ v6.0 — PUMP DETECTION (7 شروط قوية — Gate.io)
+# ✅ v7.0 — PUMP DETECTION (10 شروط قوية — Gate.io)
 # ════════════════════════════════════════════════════════════════════
-# الـ 4 شروط الأساسية (طلب المستخدم): Funding + CVD + Taker + OB Imbalance
-# + 3 شروط تكميلية قوية تأكد الجودة
+# الـ 4 شروط الأساسية: Funding + CVD + Taker + OB Imbalance
+# + 6 شروط تكميلية قوية تأكد الجودة
 # لا "قيد المراقبة" — فقط فرص جاهزة
 # الإشارة لا تتكرر إلا لو النقاط زادت
 # ════════════════════════════════════════════════════════════════════
@@ -50,14 +51,17 @@ PUMP_W_CVD_DIVERGENCE    = 4   # 2) ⭐ CVD Divergence (الأهم)
 PUMP_W_TAKER_BUY_RATIO   = 3   # 3) ⭐ Taker Buy Ratio
 PUMP_W_OB_IMBALANCE      = 3   # 4) ⭐ Order Book Imbalance
 
-# ───── الشروط الـ 3 الجديدة (تكميلية) ─────
+# ───── الشروط الـ 6 التكميلية ─────
 PUMP_W_VOL_ACCEL         = 3   # 5) Volume Acceleration
-PUMP_W_SUSTAINED_BUY     = 3   # 6) Sustained Buy Pressure
-PUMP_W_BID_WALL          = 3   # 7) Bid Wall (دعم شراء قوي)
+PUMP_W_BID_WALL          = 3   # 6) Bid Wall (دعم شراء قوي)
+PUMP_W_WHALE_ACCUM       = 3   # 7) ✅ جديد — Whale Accumulation
+PUMP_W_EMA21_CROSS       = 3   # 8) ✅ جديد — EMA21 Crossover
+PUMP_W_MTF_BUY           = 3   # 9) ✅ جديد — Multi-Timeframe Buy Pressure
+PUMP_W_SHORT_LIQ         = 4   # 10) ✅ جديد — Short Liquidation
 
-PUMP_MAX_SCORE           = 22  # المجموع الأقصى
-PUMP_SCORE_STRONG        = 15  # 🚀 STRONG (≥ 68%)
-PUMP_SCORE_MODERATE      = 11  # ⚠️ MODERATE (≥ 50%)
+PUMP_MAX_SCORE           = 32  # المجموع الأقصى (13 أساسية + 19 تكميلية)
+PUMP_SCORE_STRONG        = 22  # 🚀 STRONG (≈ 68%)
+PUMP_SCORE_MODERATE      = 16  # ⚠️ MODERATE (≈ 50%)
 PUMP_SIGNAL_COOLDOWN_MIN = 180 # ✅ v6.4 — 3 ساعات بدل ساعة
 PUMP_RESEND_MIN_INCREASE = 3   # ✅ v6.4 — لازم النقاط تزيد 3+ لإعادة الإرسال
 PUMP_RESEND_ON_UPGRADE   = True # ✅ v6.4 — إعادة الإرسال لو ترقّى من MODERATE لـ STRONG
@@ -75,13 +79,34 @@ PUMP_OB_IMBALANCE_MIN    = 0.70      # ≥ 70% = 2 نقاط
 PUMP_OB_IMBALANCE_STRONG = 0.85      # ≥ 85% = 3 نقاط
 PUMP_OB_RANGE_PCT        = 0.02      # نطاق ±2%
 
-# ───── الشروط الجديدة ─────
+# ───── عتبات التكميلية ─────
 PUMP_VOL_ACCEL_MIN       = 1.5       # 1.5x = 2 نقاط
 PUMP_VOL_ACCEL_STRONG    = 2.5       # 2.5x = 3 نقاط
-PUMP_SUSTAINED_CANDLES   = 3         # 3 شموع متتالية
 PUMP_BID_WALL_RANGE      = 0.015     # ±1.5% من السعر
 PUMP_BID_WALL_MIN_RATIO  = 2.0       # bid wall ≥ 2x متوسط الـ asks
 PUMP_BID_WALL_STRONG     = 4.0       # ≥ 4x = ⭐ قوي جداً
+
+# ───── 7) Whale Accumulation ─────
+PUMP_WHALE_TRADES_N      = 50        # آخر 50 صفقة
+PUMP_WHALE_MULT          = 10.0      # صفقة ≥ 10x المتوسط = whale (افتراضي)
+PUMP_WHALE_MULT_SMALL    = 5.0       # عملة صغيرة (volume قليل) = threshold أخف
+PUMP_WHALE_MULT_LARGE    = 15.0      # عملة كبيرة = threshold أعلى
+PUMP_WHALE_SMALL_VOL     = 3_000_000 # أقل من كده = صغيرة
+PUMP_WHALE_LARGE_VOL     = 30_000_000# أكبر من كده = كبيرة
+
+# ───── 8) EMA21 Crossover ─────
+PUMP_EMA21_PERIOD        = 21        # فترة الـ EMA
+PUMP_EMA21_CANDLES       = 30        # آخر 30 كاندل 1h
+
+# ───── 9) Multi-Timeframe Buy Pressure ─────
+PUMP_MTF_INTERVALS       = ("15m", "1h", "4h")  # 3 تايم فريمز
+PUMP_MTF_CANDLES         = 6         # آخر 6 كاندلات في كل TF
+PUMP_MTF_GREEN_PCT       = 0.60      # ≥ 60% أخضر في كل TF
+
+# ───── 10) Short Liquidation ─────
+PUMP_SHORT_OI_HOURS      = 3         # مقارنة OI آخر 3 ساعات
+PUMP_SHORT_OI_INCREASE   = 0.10      # OI زاد ≥ 10%
+PUMP_SHORT_PRICE_FLAT    = 0.5       # السعر ثابت/نازل (تغيّر ≤ +0.5%)
 
 # ═══════════════════════════════════════════════════════════════
 # ✅ v5.0 — نظام الـ 15 شرط (Pro Trader System)
@@ -409,10 +434,37 @@ async def fetch_gate_funding_rate(session, symbol):
                                timeout=aiohttp.ClientTimeout(total=6)) as r:
             if r.status != 200: return None
             data = await r.json()
-        if not data or not isinstance(data, list): return None
-        return float(data[0].get("r", 0))
     except Exception:
         return None
+
+
+async def fetch_gate_open_interest(session, symbol):
+    """
+    الشرط 10 (Short Liquidation): تاريخ الـ Open Interest من Gate.io Futures
+    نجيب قراءات بفاصل ساعة لآخر ~4 ساعات لمقارنة OI الحالي بالـ OI قبل 3 ساعات.
+    Returns: list of dicts [{"ts": int, "oi": float}] مرتبة زمنياً، أو [] لو غير متاح.
+    """
+    url = "https://api.gateio.ws/api/v4/futures/usdt/contract_stats"
+    params = {"contract": f"{symbol}_USDT", "interval": "1h", "limit": 5}
+    try:
+        async with session.get(url, params=params,
+                               timeout=aiohttp.ClientTimeout(total=6)) as r:
+            if r.status != 200: return []
+            data = await r.json()
+        if not data or not isinstance(data, list): return []
+        out = []
+        for d in data:
+            try:
+                # 'open_interest' عدد العقود؛ 'lsr_account' ... إلخ — نأخذ OI فقط
+                oi = float(d.get("open_interest", 0) or 0)
+                ts = int(d.get("time", 0) or 0)
+                out.append({"ts": ts, "oi": oi})
+            except (ValueError, TypeError):
+                continue
+        out.sort(key=lambda x: x["ts"])
+        return out
+    except Exception:
+        return []
 
 
 async def fetch_gate_recent_trades(session, symbol, limit=1000):
@@ -637,37 +689,164 @@ def eval_volume_acceleration(candles_1h):
             "label": f"{ratio:.2f}x (الحد {PUMP_VOL_ACCEL_MIN}x)"}
 
 
-def eval_sustained_buy_pressure(candles_1h):
+def _ema_last(values, period):
+    """يحسب قيمة EMA الأخيرة من قائمة أسعار (closes)."""
+    if not values or len(values) < period:
+        return None
+    k = 2 / (period + 1)
+    ema = sum(values[:period]) / period   # SMA كبداية
+    for v in values[period:]:
+        ema = v * k + ema * (1 - k)
+    return ema
+
+
+def eval_whale_accumulation(trades, volume_24h):
     """
-    الشرط 6 — Sustained Buy Pressure (max 3 pts)
-    3 شموع متتالية فيها:
-      - شمعة خضراء (close > open)
-      - الفوليوم الشرائي ≥ 55% (تقريبي: شمعة خضراء = 100% buy، حمراء = 0%)
-    لا نملك tick-by-tick بيانات داخل الشمعة من /spot/candlesticks،
-    لذا نستخدم منطق: شمعة خضراء قوية + range > 0.3% = ضغط شراء حقيقي
+    الشرط 7 — 🐋 Whale Accumulation (max 3 pts)
+    آخر 50 صفقة: نحسب متوسط حجم الصفقة. أي صفقة buy حجمها ≥ (mult × المتوسط) = whale.
+    mult يتكيّف مع حجم العملة: صغيرة=5x, عادية=10x, كبيرة=15x.
+    لو في whale buy واحدة على الأقل → 3 نقاط.
     """
-    if not candles_1h or len(candles_1h) < PUMP_SUSTAINED_CANDLES + 1:
-        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز غير كافية"}
-    last = candles_1h[-PUMP_SUSTAINED_CANDLES:]
-    sustained_count = 0
-    for c in last:
-        if c["open"] <= 0: continue
-        body_pct = (c["close"] - c["open"]) / c["open"] * 100
-        rng = c["high"] - c["low"]
-        if rng <= 0: continue
-        body = abs(c["close"] - c["open"])
-        body_ratio = body / rng  # حجم الجسم vs المدى الكلي
-        # شمعة خضراء + body كبير (مش doji) + حركة محسوسة
-        is_strong = c["close"] > c["open"] and body_ratio > 0.5 and body_pct > 0.2
-        if is_strong:
-            sustained_count += 1
-    is_pass = sustained_count >= PUMP_SUSTAINED_CANDLES
+    if not trades or len(trades) < 10:
+        return {"pass": False, "score": 0, "value": 0, "label": "صفقات غير كافية"}
+    trades_sorted = sorted(trades, key=lambda x: x["ts"])
+    last = trades_sorted[-PUMP_WHALE_TRADES_N:]
+    qtys = [t["qty"] for t in last if t["qty"] > 0]
+    if not qtys:
+        return {"pass": False, "score": 0, "value": 0, "label": "لا أحجام"}
+    avg_qty = sum(qtys) / len(qtys)
+    if avg_qty <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "متوسط صفر"}
+
+    # threshold متكيّف حسب حجم العملة
+    if volume_24h and volume_24h < PUMP_WHALE_SMALL_VOL:
+        mult = PUMP_WHALE_MULT_SMALL
+    elif volume_24h and volume_24h > PUMP_WHALE_LARGE_VOL:
+        mult = PUMP_WHALE_MULT_LARGE
+    else:
+        mult = PUMP_WHALE_MULT
+    threshold = avg_qty * mult
+
+    whale_buys = [t for t in last if t["side"] == "buy" and t["qty"] >= threshold]
+    biggest = max((t["qty"] for t in whale_buys), default=0)
+    is_pass = len(whale_buys) >= 1
+    ratio = (biggest / avg_qty) if avg_qty > 0 else 0
     return {
         "pass":  is_pass,
-        "score": PUMP_W_SUSTAINED_BUY if is_pass else (2 if sustained_count >= 2 else 0),
-        "value": sustained_count,
-        "label": f"{sustained_count}/{PUMP_SUSTAINED_CANDLES} شموع خضراء قوية متتالية",
+        "score": PUMP_W_WHALE_ACCUM if is_pass else 0,
+        "value": len(whale_buys),
+        "label": (f"🐋 {len(whale_buys)} صفقة whale (أكبرها {ratio:.0f}x المتوسط، حد {mult:.0f}x)"
+                  if is_pass else f"لا صفقات whale (حد {mult:.0f}x المتوسط)"),
     }
+
+
+def eval_ema21_crossover(candles_1h):
+    """
+    الشرط 8 — 📊 EMA21 Crossover (max 3 pts)
+    آخر 30 كاندل 1h: نحسب EMA21.
+      - السعر الحالي فوق الـ EMA + الكاندل السابقة كانت تحتها = crossover للتو → 3 نقاط
+      - السعر فوق الـ EMA بدون crossover = نقطة واحدة
+    """
+    if not candles_1h or len(candles_1h) < PUMP_EMA21_PERIOD + 2:
+        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز غير كافية"}
+    closes = [c["close"] for c in candles_1h[-PUMP_EMA21_CANDLES:]]
+    if len(closes) < PUMP_EMA21_PERIOD + 2:
+        closes = [c["close"] for c in candles_1h]
+    # EMA حتى الكاندل الحالية، وEMA حتى الكاندل السابقة
+    ema_now  = _ema_last(closes, PUMP_EMA21_PERIOD)
+    ema_prev = _ema_last(closes[:-1], PUMP_EMA21_PERIOD)
+    if ema_now is None or ema_prev is None:
+        return {"pass": False, "score": 0, "value": 0, "label": "EMA غير محسوب"}
+    price_now  = closes[-1]
+    price_prev = closes[-2]
+
+    crossed_up = (price_prev < ema_prev) and (price_now > ema_now)
+    above_only = price_now > ema_now
+
+    if crossed_up:
+        return {"pass": True, "score": PUMP_W_EMA21_CROSS, "value": price_now - ema_now,
+                "label": f"📊 Crossover للتو فوق EMA21 ({fmt_price(price_now)} > {fmt_price(ema_now)})"}
+    if above_only:
+        return {"pass": True, "score": 1, "value": price_now - ema_now,
+                "label": f"السعر فوق EMA21 بدون crossover"}
+    return {"pass": False, "score": 0, "value": price_now - ema_now,
+            "label": f"السعر تحت EMA21"}
+
+
+def eval_multi_tf_buy_pressure(mtf_candles):
+    """
+    الشرط 9 — 🔄 Multi-Timeframe Buy Pressure (max 3 pts)
+    mtf_candles: dict {interval: [candles]} للـ 15m و1h و4h.
+    في كل TF: آخر 6 كاندلات، نسبة الخضراء.
+    لو الـ 3 كلهم ≥ 60% أخضر → 3 نقاط (تأكيد على كل المستويات).
+    """
+    results = {}
+    all_ok = True
+    checked = 0
+    for tf in PUMP_MTF_INTERVALS:
+        candles = mtf_candles.get(tf) or []
+        if len(candles) < PUMP_MTF_CANDLES:
+            all_ok = False
+            results[tf] = None
+            continue
+        checked += 1
+        last = candles[-PUMP_MTF_CANDLES:]
+        green = sum(1 for c in last if c["close"] > c["open"])
+        pct = green / len(last)
+        results[tf] = pct
+        if pct < PUMP_MTF_GREEN_PCT:
+            all_ok = False
+
+    is_pass = all_ok and checked == len(PUMP_MTF_INTERVALS)
+    parts = []
+    for tf in PUMP_MTF_INTERVALS:
+        p = results.get(tf)
+        parts.append(f"{tf}:{p*100:.0f}%" if p is not None else f"{tf}:—")
+    return {
+        "pass":  is_pass,
+        "score": PUMP_W_MTF_BUY if is_pass else 0,
+        "value": results,
+        "label": f"🔄 {' | '.join(parts)} (حد {PUMP_MTF_GREEN_PCT*100:.0f}% لكل TF)",
+    }
+
+
+def eval_short_liquidation(oi_history, funding_rate, candles_1h):
+    """
+    الشرط 10 — 📉 Short Liquidation (max 4 pts) — أساسي القوة
+      أ) Open Interest زاد ≥ 10% في آخر 3 ساعات + السعر ثابت/نازل = شورتات جديدة
+      ب) Funding Rate سالب = شورتات أكتر من اللونجات
+    الاتنين = 4 نقاط | واحد بس = 2 نقاط
+    """
+    cond_oi = False
+    oi_change_pct = 0.0
+    if oi_history and len(oi_history) >= 2:
+        oi_now = oi_history[-1]["oi"]
+        # القراءة قبل ~3 ساعات (أو أقدم متاح)
+        idx = max(0, len(oi_history) - 1 - PUMP_SHORT_OI_HOURS)
+        oi_old = oi_history[idx]["oi"]
+        if oi_old > 0:
+            oi_change_pct = (oi_now - oi_old) / oi_old * 100
+        # تغيّر السعر في نفس الفترة (آخر 3 شموع 1h)
+        price_flat_or_down = True
+        if candles_1h and len(candles_1h) >= PUMP_SHORT_OI_HOURS + 1:
+            p_old = candles_1h[-(PUMP_SHORT_OI_HOURS + 1)]["close"]
+            p_now = candles_1h[-1]["close"]
+            if p_old > 0:
+                price_chg = (p_now - p_old) / p_old * 100
+                price_flat_or_down = price_chg <= PUMP_SHORT_PRICE_FLAT
+        cond_oi = (oi_change_pct >= PUMP_SHORT_OI_INCREASE * 100) and price_flat_or_down
+
+    cond_funding = funding_rate is not None and funding_rate < 0
+
+    if cond_oi and cond_funding:
+        return {"pass": True, "score": PUMP_W_SHORT_LIQ, "value": oi_change_pct,
+                "label": f"📉 OI +{oi_change_pct:.1f}% (سعر ثابت) + Funding سالب = شورتات محاصرة 🔥"}
+    if cond_oi or cond_funding:
+        reason = (f"OI +{oi_change_pct:.1f}%" if cond_oi else "Funding سالب")
+        return {"pass": True, "score": 2, "value": oi_change_pct,
+                "label": f"📉 إشارة شورت جزئية ({reason})"}
+    return {"pass": False, "score": 0, "value": oi_change_pct,
+            "label": f"لا ضغط شورت (OI {oi_change_pct:+.1f}%)"}
 
 
 def eval_bid_wall(ob, current_price):
@@ -704,55 +883,71 @@ def eval_bid_wall(ob, current_price):
 # ✅ v6.0 — المحرك الرئيسي للبامب (7 شروط)
 # ════════════════════════════════════════════════════════════════════
 
-async def evaluate_pump_signal(session, symbol, current_price):
+async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     """
-    يقيم الـ 7 شروط الجديدة على عملة واحدة
+    يقيم الـ 10 شروط على عملة واحدة
     """
     # جلب البيانات بالتوازي
-    funding, trades, ob, kl1h = await asyncio.gather(
+    funding, trades, ob, kl1h, kl15m, kl4h, oi_hist = await asyncio.gather(
         fetch_gate_funding_rate(session, symbol),
         fetch_gate_recent_trades(session, symbol, limit=1000),
         fetch_gate_orderbook(session, symbol, limit=30),
         fetch_klines(session, symbol, interval="1h", limit=72),
+        fetch_klines(session, symbol, interval="15m", limit=12),
+        fetch_klines(session, symbol, interval="4h", limit=12),
+        fetch_gate_open_interest(session, symbol),
         return_exceptions=True
     )
     if isinstance(funding, Exception): funding = None
     if isinstance(trades, Exception):  trades  = []
     if isinstance(ob, Exception):      ob      = None
     if isinstance(kl1h, Exception):    kl1h    = []
+    if isinstance(kl15m, Exception):   kl15m   = []
+    if isinstance(kl4h, Exception):    kl4h    = []
+    if isinstance(oi_hist, Exception): oi_hist = []
+
+    mtf = {"15m": kl15m, "1h": kl1h, "4h": kl4h}
 
     # تقييم الشروط
-    r1 = eval_funding_rate(funding)                           # 1) Funding (3 pts)
-    r2 = eval_cvd_divergence(trades, kl1h)                    # 2) CVD (4 pts)
-    r3 = eval_taker_buy_ratio(trades)                         # 3) Taker (3 pts)
-    r4 = eval_orderbook_imbalance(ob, current_price)          # 4) OB Imbalance (3 pts)
-    r5 = eval_volume_acceleration(kl1h)                       # 5) Vol Accel (3 pts)
-    r6 = eval_sustained_buy_pressure(kl1h)                    # 6) Sustained (3 pts)
-    r7 = eval_bid_wall(ob, current_price)                     # 7) Bid Wall (3 pts)
+    r1  = eval_funding_rate(funding)                          # 1) Funding (3 pts) ⭐
+    r2  = eval_cvd_divergence(trades, kl1h)                   # 2) CVD (4 pts) ⭐
+    r3  = eval_taker_buy_ratio(trades)                        # 3) Taker (3 pts) ⭐
+    r4  = eval_orderbook_imbalance(ob, current_price)         # 4) OB Imbalance (3 pts) ⭐
+    r5  = eval_volume_acceleration(kl1h)                      # 5) Vol Accel (3 pts)
+    r6  = eval_bid_wall(ob, current_price)                    # 6) Bid Wall (3 pts)
+    r7  = eval_whale_accumulation(trades, volume_24h)         # 7) Whale (3 pts)
+    r8  = eval_ema21_crossover(kl1h)                          # 8) EMA21 (3 pts)
+    r9  = eval_multi_tf_buy_pressure(mtf)                     # 9) Multi-TF (3 pts)
+    r10 = eval_short_liquidation(oi_hist, funding, kl1h)      # 10) Short Liq (4 pts)
 
-    total = r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"] + r6["score"] + r7["score"]
+    total = (r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"]
+             + r6["score"] + r7["score"] + r8["score"] + r9["score"] + r10["score"])
 
-    # ───── شرط الـ core الإلزامي ─────
+    # ───── شرط الـ core الإلزامي: لازم 3 من 4 أساسية على الأقل ─────
     core_passed = sum(1 for r in [r1, r2, r3, r4] if r["pass"])
-    core_ok = core_passed >= 2
+    core_ok = core_passed >= 3          # ✅ الحد الأدنى للإرسال = 3/4 أساسية
 
-    # ───── ✅ v6.2 — Override: 3+ من 4 أساسية = إشارة دخول STRONG فورية ─────
+    # ───── Override: 3+ من 4 أساسية = إشارة دخول STRONG فورية ─────
     core_override = core_passed >= 3
 
     # ───── تصنيف القوة ─────
-    if core_override:
-        # 3 أو 4 من الأساسية متفعلين = إشارة دخول STRONG (مهما كانت النقاط)
+    if not core_ok:
+        # أقل من 3 أساسية = تجاهل تماماً مهما كانت النقاط
+        strength = None
+        strength_emoji = "\u274c"
+        strength_label = "تجاهل — أقل من 3/4 أساسية"
+    elif core_override:
         strength = "STRONG"
         strength_emoji = "\U0001f680"
         if core_passed == 4:
             strength_label = "STRONG — 4/4 أساسية متفعلة 🔥🔥 إشارة مثالية"
         else:
             strength_label = "STRONG — 3/4 أساسية متفعلة 🔥 إشارة دخول"
-    elif total >= PUMP_SCORE_STRONG and core_ok:
+    elif total >= PUMP_SCORE_STRONG:
         strength = "STRONG"
         strength_emoji = "\U0001f680"
         strength_label = "STRONG — نقاط عالية + أساسية كافية"
-    elif total >= PUMP_SCORE_MODERATE and core_ok:
+    elif total >= PUMP_SCORE_MODERATE:
         strength = "MODERATE"
         strength_emoji = "\u26a0\ufe0f"
         strength_label = "MODERATE — دخول بحجم صغير"
@@ -779,15 +974,18 @@ async def evaluate_pump_signal(session, symbol, current_price):
             "taker_buy_ratio":  r3,
             "ob_imbalance":     r4,
             "vol_accel":        r5,
-            "sustained_buy":    r6,
-            "bid_wall":         r7,
+            "bid_wall":         r6,
+            "whale_accum":      r7,
+            "ema21_cross":      r8,
+            "mtf_buy":          r9,
+            "short_liq":        r10,
         },
     }
 
 
 def format_pump_signal_message(result):
     """
-    تنسيق الإشارة على نمط الـ prompt — 7 شروط
+    تنسيق الإشارة — 10 شروط (4 أساسية ⭐ + 6 تكميلية)
     """
     c = result["conditions"]
     sym = result["symbol"]
@@ -811,8 +1009,11 @@ def format_pump_signal_message(result):
         ("\u2b50", "Taker Buy Ratio",    c["taker_buy_ratio"]),
         ("\u2b50", "Order Book Imb.",    c["ob_imbalance"]),
         ("",        "Volume Accel.",      c["vol_accel"]),
-        ("",        "Sustained Buy",      c["sustained_buy"]),
         ("",        "Bid Wall",           c["bid_wall"]),
+        ("",        "Whale Accum.",       c["whale_accum"]),
+        ("",        "EMA21 Crossover",    c["ema21_cross"]),
+        ("",        "Multi-TF Buy",       c["mtf_buy"]),
+        ("",        "Short Liquidation",  c["short_liq"]),
     ]
     for marker, name, r in items:
         icon = "\u2705" if r["pass"] else "\u274c"
@@ -890,7 +1091,10 @@ async def check_signals(bot: Bot, target_chat: int = None):
         async def analyze(coin):
             async with sem:
                 try:
-                    result = await evaluate_pump_signal(session, coin["symbol"], coin["price"])
+                    result = await evaluate_pump_signal(
+                        session, coin["symbol"], coin["price"],
+                        volume_24h=coin.get("volume_24h", 0)
+                    )
                     # نضيف معلومات العملة
                     result["name"]            = coin.get("name", coin["symbol"])
                     result["volume_24h"]      = coin["volume_24h"]
@@ -957,10 +1161,9 @@ async def check_signals(bot: Bot, target_chat: int = None):
         logger.info(f"✅ لا توجد إشارات بامب جديدة (فحص {len(candidates)} عملة)")
         return
 
-    # 7️⃣ إرسال الإشارات
+    # 7️⃣ إرسال الإشارات (كل الإشارات بدون حد)
     sent_count = 0
-    MAX_SIGNALS = 10
-    for r in fresh_main[:MAX_SIGNALS]:
+    for r in fresh_main:
         try:
             msg = format_pump_signal_message(r)
             await bot.send_message(chat_id=chat_target, text=msg,
@@ -1085,9 +1288,9 @@ async def continuous_signal_scanner(bot: Bot):
 # ==================== أوامر البوت ====================
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🚀 Pump Detection Bot v6.0 — Gate.io\n"
+        "🚀 Pump Detection Bot v7.0 — Gate.io\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "نظام كشف البامب — 7 شروط قوية:\n\n"
+        "نظام كشف البامب — 10 شروط قوية:\n\n"
         "⭐ الشروط الأساسية (الأهم):\n"
         f"1️⃣ Funding Rate Anomaly     ({PUMP_W_FUNDING_RATE} pts)\n"
         f"2️⃣ CVD Divergence            ({PUMP_W_CVD_DIVERGENCE} pts)\n"
@@ -1095,11 +1298,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"4️⃣ Order Book Imbalance      ({PUMP_W_OB_IMBALANCE} pts)\n\n"
         "📊 الشروط التكميلية:\n"
         f"5️⃣ Volume Acceleration       ({PUMP_W_VOL_ACCEL} pts)\n"
-        f"6️⃣ Sustained Buy Pressure    ({PUMP_W_SUSTAINED_BUY} pts)\n"
-        f"7️⃣ Bid Wall (دعم قوي)         ({PUMP_W_BID_WALL} pts)\n\n"
+        f"6️⃣ Bid Wall (دعم قوي)         ({PUMP_W_BID_WALL} pts)\n"
+        f"7️⃣ Whale Accumulation 🐋      ({PUMP_W_WHALE_ACCUM} pts)\n"
+        f"8️⃣ EMA21 Crossover 📊         ({PUMP_W_EMA21_CROSS} pts)\n"
+        f"9️⃣ Multi-TF Buy Pressure 🔄   ({PUMP_W_MTF_BUY} pts)\n"
+        f"🔟 Short Liquidation 📉       ({PUMP_W_SHORT_LIQ} pts)\n\n"
         f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
         f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n"
-        f"⭐ Override: 3/4 أساسية = إشارة فورية\n\n"
+        f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n\n"
         f"🌐 المصدر: كل عملات Gate.io USDT\n"
         f"   فلتر: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
         f"🔄 سكان مستمر — فاصل {SIGNAL_LOOP_GAP_SECONDS}ث\n"
@@ -1126,7 +1332,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         last_str = "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ Pump Detection Bot — v5.0\n\n"
+        f"✅ Pump Detection Bot — v7.0\n\n"
         f"🌐 المصدر: كل Gate.io USDT\n"
         f"   فلتر: فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
         f"   توازي: {GATE_PARALLEL_LIMIT} طلب\n\n"
@@ -1137,7 +1343,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG} نقاط\n"
         f"   ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE} نقاط\n"
         f"   Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة\n\n"
-        f"🔬 الشروط النشطة (7):\n"
+        f"🔬 الشروط النشطة (10):\n"
         f"   ⭐ الأساسية:\n"
         f"   1. Funding Rate Anomaly\n"
         f"   2. CVD Divergence\n"
@@ -1145,9 +1351,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   4. Order Book Imbalance\n"
         f"   📊 التكميلية:\n"
         f"   5. Volume Acceleration\n"
-        f"   6. Sustained Buy Pressure\n"
-        f"   7. Bid Wall (دعم شراء قوي)\n\n"
-        f"⭐ Override: 3/4 أساسية = إشارة فورية\n"
+        f"   6. Bid Wall (دعم شراء قوي)\n"
+        f"   7. Whale Accumulation 🐋\n"
+        f"   8. EMA21 Crossover 📊\n"
+        f"   9. Multi-TF Buy Pressure 🔄\n"
+        f"   10. Short Liquidation 📉\n\n"
+        f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n"
         f"🔒 Lock نشط ضد الإرسال المزدوج"
     )
 
@@ -1225,12 +1434,12 @@ def main():
     # السكان يبدأ من post_init كـ background task
 
     print("="*60)
-    print("🚀 Pump Detection Bot v6.0 — Gate.io Edition")
-    print(f"🌐 المصدر: كل Gate.io USDT (~{GATE_MAX_CANDIDATES} عملة)")
+    print("🚀 Pump Detection Bot v7.0 — Gate.io Edition")
+    print(f"🌐 المصدر: كل Gate.io USDT (سقف {GATE_MAX_CANDIDATES} عملة)")
     print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
     print(f"")
-    print(f"🚨 نظام البامب (7 شروط):")
+    print(f"🚨 نظام البامب (10 شروط):")
     print(f"   ⭐ الأساسية:")
     print(f"   1. Funding Rate Anomaly      ({PUMP_W_FUNDING_RATE} pts)")
     print(f"   2. CVD Divergence             ({PUMP_W_CVD_DIVERGENCE} pts)")
@@ -1238,12 +1447,15 @@ def main():
     print(f"   4. Order Book Imbalance       ({PUMP_W_OB_IMBALANCE} pts)")
     print(f"   📊 التكميلية:")
     print(f"   5. Volume Acceleration        ({PUMP_W_VOL_ACCEL} pts)")
-    print(f"   6. Sustained Buy Pressure     ({PUMP_W_SUSTAINED_BUY} pts)")
-    print(f"   7. Bid Wall                   ({PUMP_W_BID_WALL} pts)")
+    print(f"   6. Bid Wall                   ({PUMP_W_BID_WALL} pts)")
+    print(f"   7. Whale Accumulation         ({PUMP_W_WHALE_ACCUM} pts)")
+    print(f"   8. EMA21 Crossover            ({PUMP_W_EMA21_CROSS} pts)")
+    print(f"   9. Multi-TF Buy Pressure      ({PUMP_W_MTF_BUY} pts)")
+    print(f"   10. Short Liquidation         ({PUMP_W_SHORT_LIQ} pts)")
     print(f"   ───────────────────────────")
     print(f"   المجموع: {PUMP_MAX_SCORE} نقاط")
     print(f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG}  |  ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}")
-    print(f"   ⭐ Override: 3/4 أساسية = إشارة فورية")
+    print(f"   ✅ شرط الإرسال: 3/4 أساسية على الأقل")
     print(f"")
     print(f"🔄 السكان المستمر: فاصل {SIGNAL_LOOP_GAP_SECONDS}ث بين الدورات")
     print(f"   Cooldown لكل عملة: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة (إلا لو النقاط زادت)")
