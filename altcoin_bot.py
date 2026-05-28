@@ -2231,16 +2231,25 @@ async def check_signals(bot: Bot, target_chat: int = None):
     sent_count = 0
     MAX_SIGNALS = 10
     for r in fresh_main[:MAX_SIGNALS]:
+        sym = r["symbol"]
+        # ✅ حجز الإشارة قبل الإرسال (يمنع التكرار لو اشتغلت دورة فحص تانية بالتوازي)
+        # نخزن الوقت + النقاط + القوة. لو الإرسال فشل بنرجّع الحالة القديمة.
+        prev_entry = seen_signals.get(sym)
+        seen_signals[sym] = (datetime.now(), r["score"], r["strength"])
         try:
             msg = format_pump_signal_message(r)
             await bot.send_message(chat_id=chat_target, text=msg,
                                     disable_web_page_preview=True)
-            # نخزن الوقت + النقاط + القوة (للسماح بإعادة الإرسال لو زادت أو ترقّت)
-            seen_signals[r["symbol"]] = (datetime.now(), r["score"], r["strength"])
             sent_count += 1
+            save_seen_signals()   # ✅ حفظ فوري بعد كل إرسال (يمنع التكرار حتى لو فيه نسخة تانية)
             await asyncio.sleep(0.7)
         except Exception as e:
-            logger.error(f"خطأ ارسال إشارة {r['symbol']}: {e}")
+            logger.error(f"خطأ ارسال إشارة {sym}: {e}")
+            # رجّع الحالة القديمة عشان نحاول تاني في دورة جاية
+            if prev_entry is not None:
+                seen_signals[sym] = prev_entry
+            else:
+                seen_signals.pop(sym, None)
 
     logger.info(f"📤 تم إرسال {sent_count} إشارة")
     previous_signals = {r["symbol"]: r for r in fresh_main}
@@ -2977,9 +2986,34 @@ async def _post_shutdown(app: Application):
 
 
 # ==================== ✅ تشغيل البوت مع منع التشغيل المزدوج ====================
+# ✅ قفل نسخة واحدة: لو فيه نسخة تانية من البوت شغالة (مثلاً deploy قديم على Railway
+#    لسه عايش)، النسخة الجديدة هتقفل نفسها بدل ما يبعت الاتنين نفس الإشارة مرتين.
+def _acquire_single_instance_lock():
+    """يحاول الحصول على قفل حصري على ملف. لو فشل = فيه نسخة تانية شغالة."""
+    import atexit
+    lock_path = "/tmp/altcoin_bot.lock"
+    try:
+        if sys.platform == "win32":
+            return None  # على ويندوز نتجاوز القفل (تطوير محلي فقط)
+        import fcntl
+        lock_file = open(lock_path, "w")
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        lock_file.write(str(os.getpid()))
+        lock_file.flush()
+        atexit.register(lock_file.close)
+        return lock_file
+    except (BlockingIOError, OSError):
+        logger.error("⛔ فيه نسخة تانية من البوت شغالة بالفعل — هذه النسخة هتقفل.")
+        print("⛔ نسخة أخرى من البوت تعمل بالفعل. إيقاف هذه النسخة لمنع التكرار.")
+        sys.exit(1)
+
+
 def main():
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+    # ✅ منع تشغيل أكثر من نسخة في نفس الوقت
+    _instance_lock = _acquire_single_instance_lock()
 
     app = (
         Application.builder()
