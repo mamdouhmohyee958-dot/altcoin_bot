@@ -19,7 +19,7 @@ from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
-TELEGRAM_TOKEN = "8608851079:AAErIr1R1l7zl4odFE1AH8uUUOHQjxiwYwI"
+TELEGRAM_TOKEN = "8794878965:AAEZR3MdSG-3OiGBeR05q9MJzvvo1ODmNmc"
 ADMIN_CHAT_ID  = "6914157653"
 CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
 
@@ -32,7 +32,7 @@ CMC_LIMIT             = 500
 MIN_SCORE          = 80       # ✅ تم رفعه من 75 إلى 80
 MIN_RVOL           = 2.5
 MAX_PREV_PUMP      = 12.0
-MIN_VOL_FOR_SIGNAL = 2_000_000
+MIN_VOL_FOR_SIGNAL = 1_000_000   # ✅ تعديل المستخدم — 1 مليون بدل 2 مليون
 
 # ==================== اعدادات الفلترة ====================
 MAX_MARKET_CAP            = 2_000_000_000
