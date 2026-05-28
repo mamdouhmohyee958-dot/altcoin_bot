@@ -774,23 +774,25 @@ def eval_liquidity_sweep(candles_1h, current_price):
 
 def eval_volume_anomaly_7d(candles_15m):
     """
-    الشرط 12 — 📈 Volume Anomaly vs 7d (1 pt)
-    شموع 15 دقيقة على آخر 7 أيام تقريباً.
-    الحالي ≥ 5x متوسط 7 أيام، أو شمعتين متتاليتين كل ≥ 3x = نقطة.
+    الشرط 12 — 📈 Volume Anomaly (1 pt)
+    يقارن فوليم الشمعة الحالية (15m) بمتوسط آخر الشموع المتاحة (آخر ~3 ساعات).
+    الحالي ≥ 5x متوسط النافذة، أو شمعتين متتاليتين كل ≥ 3x = نقطة.
     """
-    if not candles_15m or len(candles_15m) < 50:
+    if not candles_15m or len(candles_15m) < 8:
         return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 15m غير كافية"}
     vols = [c["volume"] for c in candles_15m]
-    avg_7d = sum(vols[:-2]) / max(1, len(vols) - 2)
-    if avg_7d <= 0:
+    # متوسط كل الشموع ما عدا آخر اتنين (عشان نقارن بيهم)
+    baseline = vols[:-2]
+    avg = sum(baseline) / max(1, len(baseline))
+    if avg <= 0:
         return {"pass": False, "score": 0, "value": 0, "label": "متوسط صفر"}
     curr = vols[-1]
     prev = vols[-2]
-    r_now = curr / avg_7d
-    r_prev = prev / avg_7d
+    r_now = curr / avg
+    r_prev = prev / avg
     if r_now >= PUMP_VOL_ANOMALY_X:
         return {"pass": True, "score": PUMP_W_VOL_ANOMALY, "value": r_now,
-                "label": f"📈 {r_now:.1f}x متوسط 7 أيام 🔥"}
+                "label": f"📈 {r_now:.1f}x متوسط آخر 3 ساعات 🔥"}
     if r_now >= PUMP_VOL_ANOMALY_X2 and r_prev >= PUMP_VOL_ANOMALY_X2:
         return {"pass": True, "score": PUMP_W_VOL_ANOMALY, "value": r_now,
                 "label": f"📈 شمعتين متتاليتين {r_now:.1f}x و{r_prev:.1f}x"}
@@ -812,7 +814,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         fetch_gate_recent_trades(session, symbol, limit=1000),
         fetch_gate_orderbook(session, symbol, limit=30),
         fetch_klines(session, symbol, interval="1h", limit=72),
-        fetch_klines(session, symbol, interval="15m", limit=700),  # ✅ 7 أيام لـ Vol Anomaly
+        fetch_klines(session, symbol, interval="15m", limit=12),  # ✅ السرعة الأصلية
         fetch_klines(session, symbol, interval="4h", limit=12),
         fetch_gate_open_interest(session, symbol),
         return_exceptions=True
@@ -825,8 +827,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     if isinstance(kl4h, Exception):    kl4h    = []
     if isinstance(oi_hist, Exception): oi_hist = []
 
-    # ✅ Multi-TF يحتاج آخر 6 شموع من كل tf — kl15m كبيرة دلوقتي، ناخذ آخر 12 منها
-    mtf = {"15m": kl15m[-12:] if kl15m else [], "1h": kl1h, "4h": kl4h}
+    mtf = {"15m": kl15m, "1h": kl1h, "4h": kl4h}
 
     # تقييم الشروط
     r1  = eval_funding_rate(funding)                          # 1) Funding (3 pts) ⭐
@@ -840,7 +841,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     r9  = eval_multi_tf_buy_pressure(mtf)                     # 9) Multi-TF (3 pts)
     r10 = eval_short_liquidation(oi_hist, funding, kl1h)      # 10) Short Liq (4 pts)
     r11 = eval_liquidity_sweep(kl1h, current_price)           # 11) Liq Sweep (1 pt) ✅ جديد
-    r12 = eval_volume_anomaly_7d(kl15m)                       # 12) Vol Anomaly 7d (1 pt) ✅ جديد
+    r12 = eval_volume_anomaly_7d(kl15m)                       # 12) Vol Anomaly (1 pt) ✅ جديد
 
     total = (r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"]
              + r6["score"] + r7["score"] + r8["score"] + r9["score"] + r10["score"]
@@ -1059,7 +1060,7 @@ def format_pump_signal_message(result):
         ("",   "Multi\\-TF Buy",     c["mtf_buy"]),
         ("",   "Short Liquidation",  c["short_liq"]),
         ("",   "Liquidity Sweep",    c["liq_sweep"]),
-        ("",   "Volume Anomaly 7d",  c["vol_anomaly_7d"]),
+        ("",   "Volume Anomaly",  c["vol_anomaly_7d"]),
     ]
     detail_lines = ["📋 الشروط بالتفصيل:", ""]
     for marker, name, r in items:
@@ -1343,7 +1344,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"9️⃣ Multi-TF Buy Pressure 🔄   ({PUMP_W_MTF_BUY} pts)\n"
         f"🔟 Short Liquidation 📉       ({PUMP_W_SHORT_LIQ} pts)\n"
         f"1️⃣1️⃣ Liquidity Sweep 🎯       ({PUMP_W_LIQ_SWEEP} pt)\n"
-        f"1️⃣2️⃣ Volume Anomaly 7d 📈    ({PUMP_W_VOL_ANOMALY} pt)\n\n"
+        f"1️⃣2️⃣ Volume Anomaly 📈    ({PUMP_W_VOL_ANOMALY} pt)\n\n"
         f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
         f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n\n"
@@ -1398,7 +1399,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   9. Multi-TF Buy Pressure 🔄\n"
         f"   10. Short Liquidation 📉\n"
         f"   11. Liquidity Sweep 🎯\n"
-        f"   12. Volume Anomaly 7d 📈\n\n"
+        f"   12. Volume Anomaly 📈\n\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n"
         f"🎯 هدف/استوب ديناميكي مبني على ATR\n"
         f"🔒 Lock نشط ضد الإرسال المزدوج"
@@ -1497,7 +1498,7 @@ def main():
     print(f"   9. Multi-TF Buy Pressure      ({PUMP_W_MTF_BUY} pts)")
     print(f"   10. Short Liquidation         ({PUMP_W_SHORT_LIQ} pts)")
     print(f"   11. Liquidity Sweep           ({PUMP_W_LIQ_SWEEP} pt)")
-    print(f"   12. Volume Anomaly 7d         ({PUMP_W_VOL_ANOMALY} pt)")
+    print(f"   12. Volume Anomaly         ({PUMP_W_VOL_ANOMALY} pt)")
     print(f"   ───────────────────────────")
     print(f"   المجموع: {PUMP_MAX_SCORE} نقاط")
     print(f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG}  |  ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}")
