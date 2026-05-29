@@ -25,9 +25,18 @@ CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
 
 CMC_LIMIT             = 1000
 
+# ==================== فلتر البيتكوين ====================
+BTC_FILTER_ENABLED    = True
+BTC_BEARISH_STRONG    = -2.0   # 4h change < -2% → رفض كل الإشارات
+BTC_BEARISH_LIGHT_MIN = -2.0   # 4h between -1% and -2% → تحذير
+BTC_BEARISH_LIGHT_MAX = -1.0
+BTC_HIGH_ATR_PCT      = 2.0    # ATR >= 2% → تحذير
+BTC_CRASH_1H          = -2.0   # 1h < -2% → إيقاف فوري
+BTC_RECOVERY_1H       = -0.5   # 1h >= -0.5% → استئناف تلقائي
+
 # ==================== اعدادات الاشارات ====================
 MIN_SCORE          = 80       # ✅ تم رفعه من 75 إلى 80
-MIN_VOL_FOR_SIGNAL = 1_000_000
+MIN_VOL_FOR_SIGNAL = 500_000
 
 # ✅ جديد v3.1: سكان البامب المستمر
 SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
@@ -108,16 +117,14 @@ PUMP_SHORT_OI_HOURS      = 3         # مقارنة OI آخر 3 ساعات
 PUMP_SHORT_OI_INCREASE   = 0.10      # OI زاد ≥ 10%
 PUMP_SHORT_PRICE_FLAT    = 0.5       # السعر ثابت/نازل (تغيّر ≤ +0.5%)
 
-# ───── 11) Liquidity Sweep (cluster القمم) — جديد ─────
-PUMP_W_LIQ_SWEEP         = 1         # نقطة واحدة
-PUMP_LIQ_SWEEP_RANGE_MIN = 0.02      # 2% فوق السعر
-PUMP_LIQ_SWEEP_RANGE_MAX = 0.05      # 5% فوق السعر
-PUMP_LIQ_SWEEP_MIN_PIVOTS = 2        # على الأقل قمتين في النطاق
+# ───── 11) Candle Momentum — شمعة الاندفاع ─────
+PUMP_W_CANDLE_MOM        = 1         # نقطة واحدة
+PUMP_CANDLE_BODY_PCT     = 0.70      # جسم الشمعة >= 70% من الـ range = اندفاع قوي
+PUMP_CANDLE_VOL_X        = 1.5       # فوليم الشمعة >= 1.5x متوسط آخر 7 شموع
 
-# ───── 12) Volume Anomaly vs 7d Average — جديد ─────
-PUMP_W_VOL_ANOMALY       = 1         # نقطة واحدة
-PUMP_VOL_ANOMALY_X       = 5.0       # 5x متوسط 7 أيام (15m)
-PUMP_VOL_ANOMALY_X2      = 3.0       # 3x لشمعتين متتاليتين
+# ───── 12) Early Volume Surge — اندفاع الفوليم المبكر ─────
+PUMP_W_EARLY_SURGE       = 1         # نقطة واحدة
+PUMP_EARLY_SURGE_MIN_X   = 2.0       # فوليم أول شمعة 15m >= 2x متوسط الـ 7 شموع قبلها
 
 # ═══════════════════════════════════════════════════════════════
 # ✅ تحديث: مجموع الأوزان الجديد = 32 + 1 + 1 = 34
@@ -143,6 +150,7 @@ logger = logging.getLogger(__name__)
 previous_signals: dict = {}
 seen_coins:       dict = {}
 seen_signals:     dict = {}
+btc_crashed:      bool = False   # حالة إيقاف الفحص بسبب Crash
 
 # ==================== ✅ منع الإرسال المزدوج ====================
 job_locks = {
@@ -332,6 +340,79 @@ async def fetch_gate_open_interest(session, symbol):
         return out
     except Exception:
         return []
+
+
+
+async def fetch_btc_status(session):
+    """
+    يجيب حالة البيتكوين من Gate.io:
+    - تغيّر 1h (crash detection)
+    - تغيّر 4h (اتجاه السوق)
+    - ATR 4h (تقلب)
+    Returns: dict {change_1h, change_4h, atr_pct, status, warning}
+    """
+    try:
+        kl1h = await fetch_klines(session, "BTC", interval="1h", limit=6)
+        kl4h = await fetch_klines(session, "BTC", interval="4h", limit=16)
+    except Exception:
+        return {"status": "UNKNOWN", "warning": None, "change_1h": 0, "change_4h": 0, "atr_pct": 0}
+
+    # تغيّر 1h
+    change_1h = 0.0
+    if kl1h and len(kl1h) >= 2:
+        c_now  = kl1h[-1]["close"]
+        c_prev = kl1h[-2]["close"]
+        if c_prev > 0:
+            change_1h = (c_now - c_prev) / c_prev * 100
+
+    # تغيّر 4h
+    change_4h = 0.0
+    if kl4h and len(kl4h) >= 2:
+        c_now  = kl4h[-1]["close"]
+        c_prev = kl4h[-2]["close"]
+        if c_prev > 0:
+            change_4h = (c_now - c_prev) / c_prev * 100
+
+    # ATR 4h (آخر 14 شمعة)
+    atr_pct = 0.0
+    if kl4h and len(kl4h) >= 15:
+        last = kl4h[-15:]
+        trs = []
+        for i in range(1, len(last)):
+            h, l, pc = last[i]["high"], last[i]["low"], last[i-1]["close"]
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+        atr = sum(trs) / len(trs) if trs else 0
+        price = kl4h[-1]["close"]
+        atr_pct = (atr / price * 100) if price > 0 else 0
+
+    # تحديد الحالة
+    if change_1h < BTC_CRASH_1H:
+        status  = "CRASH"
+        warning = f"🚨 BTC Crash: {change_1h:.2f}% في 1h — الفحص موقوف تلقائياً"
+    elif change_4h < BTC_BEARISH_STRONG:
+        status  = "BEARISH_STRONG"
+        warning = f"🔴 BTC Bearish قوي: {change_4h:.2f}% في 4h — تم رفض كل الإشارات"
+    elif BTC_BEARISH_LIGHT_MIN <= change_4h < BTC_BEARISH_LIGHT_MAX:
+        status  = "BEARISH_LIGHT"
+        warning = f"🟡 BTC Bearish خفيف: {change_4h:.2f}% في 4h — تحذير"
+    elif atr_pct >= BTC_HIGH_ATR_PCT:
+        status  = "HIGH_VOL"
+        warning = f"🟡 BTC تقلب عالي: ATR {atr_pct:.2f}% — تحذير"
+    elif change_4h >= 1.0:
+        status  = "BULLISH"
+        warning = None
+    else:
+        status  = "NEUTRAL"
+        warning = None
+
+    return {
+        "status":    status,
+        "warning":   warning,
+        "change_1h": change_1h,
+        "change_4h": change_4h,
+        "atr_pct":   atr_pct,
+    }
 
 
 async def fetch_gate_recent_trades(session, symbol, limit=1000):
@@ -746,58 +827,63 @@ def eval_bid_wall(ob, current_price):
             "label": f"لا جدار ({ratio:.1f}x، الحد {PUMP_BID_WALL_MIN_RATIO}x)"}
 
 
-def eval_liquidity_sweep(candles_1h, current_price):
+def eval_candle_momentum(candles_15m):
     """
-    الشرط 11 — 🎯 Liquidity Sweep (1 pt)
-    يبحث عن pivot highs (قمم سابقة) في نطاق +2% إلى +5% فوق السعر.
-    وجود قمم متعددة في هذا النطاق = stop losses للشورتات → سيولة جاهزة للحصاد.
+    الشرط 11 — 🕯️ Candle Momentum (1 pt)
+    آخر شمعة 15m:
+    - جسمها >= 70% من الـ range الكامل (شمعة اندفاع خضراء قوية)
+    - فوليمها >= 1.5x متوسط آخر 7 شموع
+    الاتنين مع بعض = momentum حقيقي في اللحظة الحالية.
     """
-    if not candles_1h or len(candles_1h) < 30 or current_price <= 0:
-        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 1h غير كافية"}
-    p_min = current_price * (1 + PUMP_LIQ_SWEEP_RANGE_MIN)
-    p_max = current_price * (1 + PUMP_LIQ_SWEEP_RANGE_MAX)
-    # pivot high = شمعة أعلى من 3 شموع قبلها و3 بعدها
-    pivots = []
-    for i in range(3, len(candles_1h) - 3):
-        h = candles_1h[i]["high"]
-        if (h > max(c["high"] for c in candles_1h[i-3:i]) and
-            h > max(c["high"] for c in candles_1h[i+1:i+4])):
-            pivots.append(h)
-    in_range = [p for p in pivots if p_min <= p <= p_max]
-    n = len(in_range)
-    if n >= PUMP_LIQ_SWEEP_MIN_PIVOTS:
-        return {"pass": True, "score": PUMP_W_LIQ_SWEEP, "value": n,
-                "label": f"🎯 {n} قمم في النطاق +2% إلى +5% (سيولة شورتات)"}
-    return {"pass": False, "score": 0, "value": n,
-            "label": f"قمم غير كافية ({n}، الحد {PUMP_LIQ_SWEEP_MIN_PIVOTS})"}
+    if not candles_15m or len(candles_15m) < 8:
+        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 15m غير كافية"}
+
+    last  = candles_15m[-1]
+    o, h, l, c = last["open"], last["high"], last["low"], last["close"]
+
+    # شرط الاتجاه: الشمعة لازم خضراء
+    if c <= o:
+        return {"pass": False, "score": 0, "value": 0, "label": "الشمعة الأخيرة حمراء"}
+
+    candle_range = h - l
+    if candle_range <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "range = صفر"}
+
+    body_pct = (c - o) / candle_range
+
+    # فوليم الشمعة vs متوسط الـ 7 قبلها
+    vols_prev = [candles_15m[i]["volume"] for i in range(-8, -1)]
+    avg_vol   = sum(vols_prev) / max(1, len(vols_prev))
+    vol_ratio = last["volume"] / avg_vol if avg_vol > 0 else 0
+
+    passed = body_pct >= PUMP_CANDLE_BODY_PCT and vol_ratio >= PUMP_CANDLE_VOL_X
+    if passed:
+        return {"pass": True, "score": PUMP_W_CANDLE_MOM, "value": body_pct,
+                "label": f"🕯️ جسم {body_pct*100:.0f}% من الـ range | فوليم {vol_ratio:.1f}x"}
+    return {"pass": False, "score": 0, "value": body_pct,
+            "label": f"جسم {body_pct*100:.0f}% (الحد {PUMP_CANDLE_BODY_PCT*100:.0f}%) | فوليم {vol_ratio:.1f}x"}
 
 
-def eval_volume_anomaly_7d(candles_15m):
+def eval_early_volume_surge(candles_15m):
     """
-    الشرط 12 — 📈 Volume Anomaly (1 pt)
-    يقارن فوليم الشمعة الحالية (15m) بمتوسط آخر الشموع المتاحة (آخر ~3 ساعات).
-    الحالي ≥ 5x متوسط النافذة، أو شمعتين متتاليتين كل ≥ 3x = نقطة.
+    الشرط 12 — 📈 Early Volume Surge (1 pt)
+    فوليم أول شمعة 15m الحالية >= 2x متوسط الـ 7 شموع قبلها.
+    اندفاع مبكر في الفوليم = دخول مال جديد.
     """
     if not candles_15m or len(candles_15m) < 8:
         return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 15m غير كافية"}
     vols = [c["volume"] for c in candles_15m]
-    # متوسط كل الشموع ما عدا آخر اتنين (عشان نقارن بيهم)
-    baseline = vols[:-2]
+    baseline = vols[-8:-1]
     avg = sum(baseline) / max(1, len(baseline))
+    curr = vols[-1]
     if avg <= 0:
         return {"pass": False, "score": 0, "value": 0, "label": "متوسط صفر"}
-    curr = vols[-1]
-    prev = vols[-2]
-    r_now = curr / avg
-    r_prev = prev / avg
-    if r_now >= PUMP_VOL_ANOMALY_X:
-        return {"pass": True, "score": PUMP_W_VOL_ANOMALY, "value": r_now,
-                "label": f"📈 {r_now:.1f}x متوسط آخر 3 ساعات 🔥"}
-    if r_now >= PUMP_VOL_ANOMALY_X2 and r_prev >= PUMP_VOL_ANOMALY_X2:
-        return {"pass": True, "score": PUMP_W_VOL_ANOMALY, "value": r_now,
-                "label": f"📈 شمعتين متتاليتين {r_now:.1f}x و{r_prev:.1f}x"}
-    return {"pass": False, "score": 0, "value": r_now,
-            "label": f"{r_now:.1f}x (الحد {PUMP_VOL_ANOMALY_X}x)"}
+    ratio = curr / avg
+    if ratio >= PUMP_EARLY_SURGE_MIN_X:
+        return {"pass": True, "score": PUMP_W_EARLY_SURGE, "value": ratio,
+                "label": f"📈 فوليم {ratio:.1f}x المتوسط 🔥 (اندفاع مبكر)"}
+    return {"pass": False, "score": 0, "value": ratio,
+            "label": f"{ratio:.1f}x (الحد {PUMP_EARLY_SURGE_MIN_X}x)"}
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -840,8 +926,8 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     r8  = eval_ema21_crossover(kl1h)                          # 8) EMA21 (3 pts)
     r9  = eval_multi_tf_buy_pressure(mtf)                     # 9) Multi-TF (3 pts)
     r10 = eval_short_liquidation(oi_hist, funding, kl1h)      # 10) Short Liq (4 pts)
-    r11 = eval_liquidity_sweep(kl1h, current_price)           # 11) Liq Sweep (1 pt) ✅ جديد
-    r12 = eval_volume_anomaly_7d(kl15m)                       # 12) Vol Anomaly (1 pt) ✅ جديد
+    r11 = eval_candle_momentum(kl15m)                          # 11) Candle Momentum (1 pt) ✅ جديد
+    r12 = eval_early_volume_surge(kl15m)                      # 12) Early Surge (1 pt) ✅ جديد
 
     total = (r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"]
              + r6["score"] + r7["score"] + r8["score"] + r9["score"] + r10["score"]
@@ -883,7 +969,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     # ═══════════════════════════════════════════════════════════════
     # ✅ v8.0 — هدف واستوب ديناميكيين مبنيين على ATR + Liquidity Sweep
     # ═══════════════════════════════════════════════════════════════
-    targets = calc_targets_and_stop(current_price, kl1h, r11)
+    targets = calc_targets_and_stop(current_price, kl1h, None)
 
     return {
         "symbol":     symbol,
@@ -910,8 +996,8 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "ema21_cross":      r8,
             "mtf_buy":          r9,
             "short_liq":        r10,
-            "liq_sweep":        r11,
-            "vol_anomaly_7d":   r12,
+            "first_3min":       r11,
+            "early_surge":      r12,
         },
     }
 
@@ -1029,14 +1115,24 @@ def format_pump_signal_message(result):
     e = _md2_escape  # اختصار
 
     # ───── الجزء الظاهر (ملخص فقط) ─────
+    score_pct = round(result['score'] / result['max_score'] * 100) if result['max_score'] > 0 else 0
+    vol_cmc_str = ""
+    if result.get("volume_cmc_total", 0) > 0:
+        cmc_vol = result["volume_cmc_total"]
+        if cmc_vol >= 1_000_000:
+            vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `${cmc_vol/1_000_000:.2f}M`"
+        else:
+            vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `${cmc_vol/1_000:.0f}K`"
+
     header_lines = [
         f"{result['strength_emoji']} *إشارة بامب محتملة*",
         "━" * 18,
         f"💎 *العملة:* `{e(sym)}USDT`",
         f"💰 *السعر:* `{e(fmt_price(price))}`",
         f"⭐ *الأساسية:* {result['core_passed']}/4",
-        f"📊 *النقاط:* {result['score']}/{result['max_score']}",
+        f"📊 *النقاط:* {result['score']}/{result['max_score']} \({score_pct}%\)",
         f"🎯 *القوة:* {e(result['strength_label'])}",
+        vol_cmc_str,
         "",
         "━━━ 📍 *الدخول والخروج* ━━━",
         f"🟢 *الدخول:* `{e(fmt_price(price))}`",
@@ -1059,8 +1155,8 @@ def format_pump_signal_message(result):
         ("",   "EMA21 Crossover",    c["ema21_cross"]),
         ("",   "Multi\\-TF Buy",     c["mtf_buy"]),
         ("",   "Short Liquidation",  c["short_liq"]),
-        ("",   "Liquidity Sweep",    c["liq_sweep"]),
-        ("",   "Volume Anomaly",  c["vol_anomaly_7d"]),
+        ("",   "Candle Momentum 🕯️", c["first_3min"]),
+        ("",   "Early Surge 📈",    c["early_surge"]),
     ]
     detail_lines = ["📋 الشروط بالتفصيل:", ""]
     for marker, name, r in items:
@@ -1076,24 +1172,69 @@ def format_pump_signal_message(result):
     spoiler_block = f"👁 *اضغط لإظهار التفاصيل:*\n||{detail_text}||"
 
     # ───── التذييل ─────
+    btc_warn = result.get("btc_warning")
+    btc_warn_line = f"\n⚠️ {e(btc_warn)}" if btc_warn else ""
     footer = [
         "",
         "━" * 18,
-        f"⏰ {e(datetime.now().strftime('%H:%M:%S'))} \\| 📡 Gate\\.io",
+        f"⏰ {e(datetime.now().strftime('%H:%M:%S'))} \\| 📡 Gate\\.io{btc_warn_line}",
     ]
 
-    return "\n".join(header_lines + [spoiler_block] + footer)
+    header_lines_final = [l for l in header_lines if l is not None]
+    return "\n".join(header_lines_final + [spoiler_block] + footer)
 
 
 # ════════════════════════════════════════════════════════════════════
 # ✅ v8.0 — فحص إشارات البامب (الـ 12 شرط)
 # ════════════════════════════════════════════════════════════════════
 async def check_signals(bot: Bot, target_chat: int = None):
-    global previous_signals
-    logger.info("🚀 فحص إشارات البامب (Pump Detection v6.0)...")
+    global previous_signals, btc_crashed
+    logger.info("🚀 فحص إشارات البامب (Pump Detection v9.0)...")
     chat_target = target_chat if target_chat else int(ADMIN_CHAT_ID)
 
     async with aiohttp.ClientSession() as session:
+        # 0️⃣ فلتر البيتكوين
+        btc_info = {"status": "UNKNOWN", "warning": None, "change_1h": 0, "change_4h": 0, "atr_pct": 0}
+        if BTC_FILTER_ENABLED:
+            btc_info = await fetch_btc_status(session)
+            logger.info(f"📡 BTC: status={btc_info['status']} | 1h={btc_info['change_1h']:.2f}% | 4h={btc_info['change_4h']:.2f}%")
+
+            # استئناف تلقائي من Crash
+            if btc_crashed and btc_info["change_1h"] >= BTC_RECOVERY_1H:
+                btc_crashed = False
+                logger.info("▶️ BTC تعافى — استئناف الفحص تلقائياً")
+                try:
+                    await bot.send_message(chat_id=chat_target,
+                        text="▶️ *BTC تعافى* — استئناف فحص الإشارات تلقائياً",
+                        parse_mode="Markdown")
+                except Exception: pass
+
+            # Crash جديد
+            if btc_info["status"] == "CRASH":
+                if not btc_crashed:
+                    btc_crashed = True
+                    logger.warning("⏸️ BTC Crash — إيقاف الفحص")
+                    try:
+                        crash_msg = (f"⏸️ *BTC Crash* — {btc_info['warning']}\n"
+                                     f"الفحص موقوف حتى التعافي (>= {BTC_RECOVERY_1H}% في 1h)")
+                        await bot.send_message(chat_id=chat_target,
+                            text=crash_msg,
+                            parse_mode="Markdown")
+                    except Exception: pass
+                return
+
+            # Bearish قوي → رفض كل الإشارات
+            if btc_info["status"] == "BEARISH_STRONG":
+                logger.warning(f"🔴 BTC Bearish قوي — رفض الإشارات")
+                try:
+                    bearish_msg = (f"🔴 *BTC Bearish قوي* — {btc_info['warning']}\n"
+                                   f"تم تخطي دورة الفحص")
+                    await bot.send_message(chat_id=chat_target,
+                        text=bearish_msg,
+                        parse_mode="Markdown")
+                except Exception: pass
+                return
+
         # 1️⃣ جلب كل عملات Gate.io USDT
         gate_tickers = await fetch_gate_tickers(session)
         if not gate_tickers:
@@ -1111,7 +1252,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
             candidates.append(d)
         candidates = candidates[:GATE_MAX_CANDIDATES]
 
-        # إثراء من CMC للحصول على الاسم الكامل والـ tags (عرض فقط)
+        # إثراء من CMC للحصول على الاسم الكامل والـ tags وإجمالي فوليم كل المنصات
         try:
             cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
             cmc_by_sym = {c.get("symbol", "").upper(): c for c in (cmc_raw or [])}
@@ -1120,10 +1261,17 @@ async def check_signals(bot: Bot, target_chat: int = None):
                 if cmc:
                     d["name"] = cmc.get("name", d.get("name", ""))
                     d["tags"] = cmc.get("tags", [])
+                    # إجمالي فوليم عبر كل المنصات من CMC
+                    quote = cmc.get("quote", {}).get("USD", {})
+                    d["volume_cmc_total"] = float(quote.get("volume_24h", 0) or 0)
+                else:
+                    d["volume_cmc_total"] = 0
         except Exception as e:
             logger.warning(f"إثراء CMC فشل: {e} — نكمل بالأسماء من Gate فقط")
+            for d in candidates:
+                d["volume_cmc_total"] = 0
 
-        logger.info(f"📋 سيتم فحص {len(candidates)} عملة (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)")
+        logger.info(f"📋 سيتم فحص {len(candidates)} عملة (فوليم >= ${MIN_VOL_FOR_SIGNAL/1_000:.0f}K)")
 
         # 3️⃣ تقييم الـ 12 شرط لكل عملة بالتوازي
         sem = asyncio.Semaphore(GATE_PARALLEL_LIMIT)
@@ -1135,9 +1283,10 @@ async def check_signals(bot: Bot, target_chat: int = None):
                         volume_24h=coin.get("volume_24h", 0)
                     )
                     # نضيف معلومات العملة
-                    result["name"]            = coin.get("name", coin["symbol"])
-                    result["volume_24h"]      = coin["volume_24h"]
+                    result["name"]             = coin.get("name", coin["symbol"])
+                    result["volume_24h"]       = coin["volume_24h"]
                     result["price_change_24h"] = coin["price_change_24h"]
+                    result["volume_cmc_total"] = coin.get("volume_cmc_total", 0)
                     return result
                 except Exception as e:
                     logger.warning(f"خطأ تحليل {coin['symbol']}: {e}")
@@ -1202,8 +1351,12 @@ async def check_signals(bot: Bot, target_chat: int = None):
 
     # 7️⃣ إرسال الإشارات (كل الإشارات بدون حد)
     sent_count = 0
+    # تحضير تحذير BTC (يضاف لكل إشارة في حالة Bearish خفيف أو تقلب عالي)
+    btc_warn_text = btc_info.get("warning") if btc_info else None
+
     for r in fresh_main:
         try:
+            r["btc_warning"] = btc_warn_text
             msg = format_pump_signal_message(r)
             await bot.send_message(chat_id=chat_target, text=msg,
                                     parse_mode="MarkdownV2",
@@ -1343,8 +1496,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"8️⃣ EMA21 Crossover 📊         ({PUMP_W_EMA21_CROSS} pts)\n"
         f"9️⃣ Multi-TF Buy Pressure 🔄   ({PUMP_W_MTF_BUY} pts)\n"
         f"🔟 Short Liquidation 📉       ({PUMP_W_SHORT_LIQ} pts)\n"
-        f"1️⃣1️⃣ Liquidity Sweep 🎯       ({PUMP_W_LIQ_SWEEP} pt)\n"
-        f"1️⃣2️⃣ Volume Anomaly 📈    ({PUMP_W_VOL_ANOMALY} pt)\n\n"
+        f"1️⃣1️⃣ Candle Momentum 🕯️       ({PUMP_W_CANDLE_MOM} pt)\n"
+        f"1️⃣2️⃣ Early Volume Surge 📈  ({PUMP_W_EARLY_SURGE} pt)\n\n"
         f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
         f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n\n"
@@ -1374,9 +1527,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         last_str = "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ Pump Detection Bot — v8.0\n\n"
+        f"✅ Pump Detection Bot — v9.0\n\n"
         f"🌐 المصدر: كل Gate.io USDT\n"
-        f"   فلتر: فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
+        f"   فلتر: فوليم >= ${MIN_VOL_FOR_SIGNAL/1_000:.0f}K\n"
+        f"   📡 فلتر BTC: {'نشط' if BTC_FILTER_ENABLED else 'متوقف'}\n"
         f"   توازي: {GATE_PARALLEL_LIMIT} طلب\n\n"
         f"🚀 سكان البامب: {scanner_status}\n"
         f"   فاصل: {SIGNAL_LOOP_GAP_SECONDS}ث\n"
@@ -1398,8 +1552,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   8. EMA21 Crossover 📊\n"
         f"   9. Multi-TF Buy Pressure 🔄\n"
         f"   10. Short Liquidation 📉\n"
-        f"   11. Liquidity Sweep 🎯\n"
-        f"   12. Volume Anomaly 📈\n\n"
+        f"   11. Candle Momentum 🕯️\n"
+        f"   12. Early Volume Surge 📈\n\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n"
         f"🎯 هدف/استوب ديناميكي مبني على ATR\n"
         f"🔒 Lock نشط ضد الإرسال المزدوج"
@@ -1425,7 +1579,7 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *Pump Detection Bot v8.0 — Gate.io*\n"
+                "🟢 *Pump Detection Bot v9.0 — Gate.io*\n"
                 f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
                 f"🌐 يفحص كل عملات Gate.io USDT (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)\n"
                 f"⚡ 12 شرط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
@@ -1479,7 +1633,7 @@ def main():
     # السكان يبدأ من post_init كـ background task
 
     print("="*60)
-    print("🚀 Pump Detection Bot v8.0 — Gate.io Edition")
+    print("🚀 Pump Detection Bot v9.0 — Gate.io Edition")
     print(f"🌐 المصدر: كل Gate.io USDT (سقف {GATE_MAX_CANDIDATES} عملة)")
     print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
@@ -1497,8 +1651,8 @@ def main():
     print(f"   8. EMA21 Crossover            ({PUMP_W_EMA21_CROSS} pts)")
     print(f"   9. Multi-TF Buy Pressure      ({PUMP_W_MTF_BUY} pts)")
     print(f"   10. Short Liquidation         ({PUMP_W_SHORT_LIQ} pts)")
-    print(f"   11. Liquidity Sweep           ({PUMP_W_LIQ_SWEEP} pt)")
-    print(f"   12. Volume Anomaly         ({PUMP_W_VOL_ANOMALY} pt)")
+    print(f"   11. Candle Momentum          ({PUMP_W_CANDLE_MOM} pt)")
+    print(f"   12. Early Volume Surge     ({PUMP_W_EARLY_SURGE} pt)")
     print(f"   ───────────────────────────")
     print(f"   المجموع: {PUMP_MAX_SCORE} نقاط")
     print(f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG}  |  ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}")
