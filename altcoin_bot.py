@@ -54,11 +54,11 @@ GATE_PARALLEL_LIMIT       = 25         # طلبات كلاينز متوازية 
 # الإشارة لا تتكرر إلا لو النقاط زادت
 # ════════════════════════════════════════════════════════════════════
 
-# ───── الشروط الـ 4 الأساسية ─────
-PUMP_W_FUNDING_RATE      = 3   # 1) ⭐ Funding Rate Anomaly
-PUMP_W_CVD_DIVERGENCE    = 4   # 2) ⭐ CVD Divergence (الأهم)
-PUMP_W_TAKER_BUY_RATIO   = 3   # 3) ⭐ Taker Buy Ratio
-PUMP_W_OB_IMBALANCE      = 3   # 4) ⭐ Order Book Imbalance
+# ───── الشروط الـ 4 الأساسية (كل شرط = 15% من المجموع) ─────
+PUMP_W_FUNDING_RATE      = 6   # 1) ⭐ Funding Rate Anomaly    (15%)
+PUMP_W_CVD_DIVERGENCE    = 6   # 2) ⭐ CVD Divergence          (15%)
+PUMP_W_TAKER_BUY_RATIO   = 6   # 3) ⭐ Taker Buy Ratio         (15%)
+PUMP_W_OB_IMBALANCE      = 6   # 4) ⭐ Order Book Imbalance    (15%)
 
 # ───── الشروط الـ 6 التكميلية ─────
 PUMP_W_VOL_ACCEL         = 3   # 5) Volume Acceleration
@@ -68,9 +68,9 @@ PUMP_W_EMA21_CROSS       = 3   # 8) ✅ جديد — EMA21 Crossover
 PUMP_W_MTF_BUY           = 3   # 9) ✅ جديد — Multi-Timeframe Buy Pressure
 PUMP_W_SHORT_LIQ         = 4   # 10) ✅ جديد — Short Liquidation
 
-PUMP_MAX_SCORE           = 34  # المجموع الأقصى (13 أساسية + 19 تكميلية + 2 جديدة)
-PUMP_SCORE_STRONG        = 23  # 🚀 STRONG (≈ 68%)
-PUMP_SCORE_MODERATE      = 17  # ⚠️ MODERATE (≈ 50%)
+PUMP_MAX_SCORE           = 45  # المجموع الأقصى (24 أساسية + 21 تكميلية) — كل أساسي 15%
+PUMP_SCORE_STRONG        = 31  # 🚀 STRONG (≈ 68%)
+PUMP_SCORE_MODERATE      = 23  # ⚠️ MODERATE (≈ 50%)
 PUMP_SIGNAL_COOLDOWN_MIN = 180 # ✅ v6.4 — 3 ساعات بدل ساعة
 PUMP_RESEND_MIN_INCREASE = 3   # ✅ v6.4 — لازم النقاط تزيد 3+ لإعادة الإرسال
 PUMP_RESEND_ON_UPGRADE   = True # ✅ v6.4 — إعادة الإرسال لو ترقّى من MODERATE لـ STRONG
@@ -467,16 +467,16 @@ async def fetch_gate_orderbook(session, symbol, limit=20):
 
 def eval_funding_rate(funding_rate):
     """
-    الشرط 1 — Funding Rate Anomaly (max 3 pts)
-    -0.05% → 2 نقاط، -0.10% → 3 نقاط
+    الشرط 1 — Funding Rate Anomaly (max 6 pts — 15%)
+    -0.05% → 3 نقاط، -0.10% → 6 نقاط
     """
     if funding_rate is None:
         return {"pass": False, "score": 0, "value": None, "label": "غير متاح (spot)"}
     pts = 0
     if funding_rate < PUMP_FUNDING_RATE_VLOW:
-        pts = PUMP_W_FUNDING_RATE  # 3
+        pts = PUMP_W_FUNDING_RATE  # 6 (15%)
     elif funding_rate < PUMP_FUNDING_RATE_LOW:
-        pts = 2
+        pts = 3
     return {
         "pass":  pts > 0,
         "score": pts,
@@ -487,8 +487,8 @@ def eval_funding_rate(funding_rate):
 
 def eval_cvd_divergence(trades, klines_recent):
     """
-    الشرط 2 — CVD Divergence (max 4 pts)
-    Tiered: CVD ≥ 15% = 3 نقاط، CVD ≥ 50% = 4 نقاط
+    الشرط 2 — CVD Divergence (max 6 pts — 15%)
+    Tiered: CVD ≥ 15% = 3 نقاط، CVD ≥ 50% = 6 نقاط
     """
     if not trades or len(trades) < 50:
         return {"pass": False, "score": 0, "value": None, "label": "بيانات غير كافية"}
@@ -519,7 +519,7 @@ def eval_cvd_divergence(trades, klines_recent):
     is_divergence = cvd_change_pct > PUMP_CVD_CHANGE_PCT and price_ok
 
     if is_strong:
-        pts = PUMP_W_CVD_DIVERGENCE  # 4
+        pts = PUMP_W_CVD_DIVERGENCE  # 6 (15%)
         passed = True
     elif is_divergence:
         pts = 3
@@ -538,9 +538,9 @@ def eval_cvd_divergence(trades, klines_recent):
 
 def eval_taker_buy_ratio(trades):
     """
-    الشرط 4 — Taker Buy Ratio (max 3 pts)
+    الشرط 3 — Taker Buy Ratio (max 6 pts — 15%)
     على آخر الصفقات: نسبة taker buys للإجمالي
-    Tiered: ≥60% = 2 نقاط، ≥70% = 3 نقاط
+    Tiered: ≥60% = 3 نقاط، ≥70% = 6 نقاط
     """
     if not trades or len(trades) < 50:
         return {"pass": False, "score": 0, "value": None, "label": "بيانات غير كافية"}
@@ -564,10 +564,10 @@ def eval_taker_buy_ratio(trades):
     pass_avg    = avg_ratio >= PUMP_TAKER_RATIO_MIN and above_count >= 2
 
     if strong_avg:
-        pts = PUMP_W_TAKER_BUY_RATIO  # 3
+        pts = PUMP_W_TAKER_BUY_RATIO  # 6 (15%)
         passed = True
     elif pass_avg:
-        pts = 2
+        pts = 3
         passed = True
     else:
         pts = 0
@@ -583,7 +583,7 @@ def eval_taker_buy_ratio(trades):
 
 def eval_orderbook_imbalance(ob, current_price):
     """
-    الشرط 4 — Order Book Imbalance (max 3 pts) — tiered
+    الشرط 4 — Order Book Imbalance (max 6 pts — 15%) — tiered
     """
     if not ob or not ob.get("bids") or not ob.get("asks") or current_price <= 0:
         return {"pass": False, "score": 0, "value": None, "label": "غير متاح"}
@@ -596,9 +596,9 @@ def eval_orderbook_imbalance(ob, current_price):
         return {"pass": False, "score": 0, "value": None, "label": "لا توجد سيولة قريبة"}
     imbalance = buy_vol / total
     if imbalance >= PUMP_OB_IMBALANCE_STRONG:
-        pts, passed = PUMP_W_OB_IMBALANCE, True   # 3
+        pts, passed = PUMP_W_OB_IMBALANCE, True   # 6 (15%)
     elif imbalance >= PUMP_OB_IMBALANCE_MIN:
-        pts, passed = 2, True
+        pts, passed = 3, True
     else:
         pts, passed = 0, False
     return {
@@ -1510,6 +1510,48 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/chatid      — معرفة الـ Chat ID"
     )
 
+
+async def cmd_btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /btc — يعرض حالة البيتكوين الحالية وقرار الفلتر"""
+    await update.message.reply_text("⏳ جاري جلب بيانات BTC...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            info = await fetch_btc_status(session)
+
+        status_map = {
+            "BULLISH":        "🟢 Bullish — سماح كامل",
+            "NEUTRAL":        "🟢 Neutral — سماح كامل",
+            "BEARISH_LIGHT":  "🟡 Bearish خفيف — سماح + تحذير",
+            "HIGH_VOL":       "🟡 تقلب عالي — سماح + تحذير",
+            "BEARISH_STRONG": "🔴 Bearish قوي — رفض الإشارات",
+            "CRASH":          "🚨 Crash — الفحص موقوف",
+            "UNKNOWN":        "❓ غير معروف",
+        }
+        decision = status_map.get(info["status"], "❓")
+        crash_note = ("\n⏸️ الفحص موقوف حالياً (في انتظار تعافي BTC)" if btc_crashed else "")
+
+        lines = [
+            "📡 حالة Bitcoin",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"📊 التغيّر 1h:  {info['change_1h']:+.2f}%",
+            f"📊 التغيّر 4h:  {info['change_4h']:+.2f}%",
+            f"📈 ATR (4h):   {info['atr_pct']:.2f}%",
+            "━━━━━━━━━━━━━━━━━━━━",
+            f"🎯 الحالة:  {decision}{crash_note}",
+            "━━━━━━━━━━━━━━━━━━━━",
+            "المعايير:",
+            "  🟢 Bullish:        4h >= +1%",
+            "  🟢 Neutral:        4h بين -1% و+1%",
+            "  🟡 Bearish خفيف:   4h بين -2% و-1%",
+            f"  🟡 تقلب عالي:      ATR >= {BTC_HIGH_ATR_PCT}%",
+            "  🔴 Bearish قوي:    4h < -2%",
+            f"  🚨 Crash:          1h < {BTC_CRASH_1H}%",
+            f"  ✅ تعافي:          1h >= {BTC_RECOVERY_1H}%",
+        ]
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ في جلب بيانات BTC: {e}")
+
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # حالة السكان المستمر
     scanner = context.application.bot_data.get("scanner_task")
@@ -1618,6 +1660,7 @@ def main():
     app.add_handler(CommandHandler("start",   cmd_start))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("chatid",  cmd_chatid))
+    app.add_handler(CommandHandler("btc",     cmd_btc))
 
     load_seen_coins()
     load_seen_signals()   # ✅ v6.4
