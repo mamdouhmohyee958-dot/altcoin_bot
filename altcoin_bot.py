@@ -35,7 +35,7 @@ BTC_CRASH_1H          = -2.0   # 1h < -2% → إيقاف فوري
 BTC_RECOVERY_1H       = -0.5   # 1h >= -0.5% → استئناف تلقائي
 
 # ==================== اعدادات الاشارات ====================
-MIN_SCORE          = 80       # ✅ تم رفعه من 75 إلى 80
+MIN_SCORE          = 45       # الحد الأدنى للإرسال (نسبة مئوية %)
 MIN_VOL_FOR_SIGNAL = 500_000
 
 # ✅ جديد v3.1: سكان البامب المستمر
@@ -950,7 +950,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         strength = "STRONG"
         strength_emoji = "\U0001f680"
         if core_passed == 4:
-            strength_label = "STRONG — 4/4 أساسية متفعلة 🔥🔥 إشارة مثالية"
+            strength_label = f"STRONG — 4/4 أساسية متفعلة 🔥🔥 إشارة مثالية"
         else:
             strength_label = "STRONG — 3/4 أساسية متفعلة 🔥 إشارة دخول"
     elif total >= PUMP_SCORE_STRONG:
@@ -1115,7 +1115,14 @@ def format_pump_signal_message(result):
     e = _md2_escape  # اختصار
 
     # ───── الجزء الظاهر (ملخص فقط) ─────
-    score_pct = round(result['score'] / result['max_score'] * 100) if result['max_score'] > 0 else 0
+    # النسبة: كل أساسي = 15%، كل فرعي = 5% (8 شروط فرعية × 5% = 40%)
+    c = result["conditions"]
+    core_keys = ["funding_rate", "cvd_divergence", "taker_buy_ratio", "ob_imbalance"]
+    supp_keys = ["vol_accel", "bid_wall", "whale_accum", "ema21_cross",
+                 "mtf_buy", "short_liq", "first_3min", "early_surge"]
+    core_pct = sum(15 for k in core_keys if result["conditions"][k]["pass"])
+    supp_pct = sum(5  for k in supp_keys if result["conditions"][k]["pass"])
+    score_pct = core_pct + supp_pct
     vol_cmc_str = ""
     if result.get("volume_cmc_total", 0) > 0:
         cmc_vol = result["volume_cmc_total"]
@@ -1130,7 +1137,7 @@ def format_pump_signal_message(result):
         f"💎 *العملة:* `{e(sym)}USDT`",
         f"💰 *السعر:* `{e(fmt_price(price))}`",
         f"⭐ *الأساسية:* {result['core_passed']}/4",
-        f"📊 *النقاط:* {result['score']}/{result['max_score']} \({score_pct}%\)",
+        f"📊 *النسبة:* {score_pct}% \({core_pct}% أساسية \+ {supp_pct}% فرعية\)",
         f"🎯 *القوة:* {e(result['strength_label'])}",
         vol_cmc_str,
         "",
@@ -1287,6 +1294,15 @@ async def check_signals(bot: Bot, target_chat: int = None):
                     result["volume_24h"]       = coin["volume_24h"]
                     result["price_change_24h"] = coin["price_change_24h"]
                     result["volume_cmc_total"] = coin.get("volume_cmc_total", 0)
+                    # حساب النسبة المئوية الثابتة
+                    core_ks = ["funding_rate", "cvd_divergence", "taker_buy_ratio", "ob_imbalance"]
+                    supp_ks = ["vol_accel", "bid_wall", "whale_accum", "ema21_cross",
+                               "mtf_buy", "short_liq", "first_3min", "early_surge"]
+                    conds = result["conditions"]
+                    result["score_pct"]  = (sum(15 for k in core_ks if conds[k]["pass"]) +
+                                            sum(5  for k in supp_ks if conds[k]["pass"]))
+                    result["core_pct"]   = sum(15 for k in core_ks if conds[k]["pass"])
+                    result["supp_pct"]   = sum(5  for k in supp_ks if conds[k]["pass"])
                     return result
                 except Exception as e:
                     logger.warning(f"خطأ تحليل {coin['symbol']}: {e}")
@@ -1297,7 +1313,8 @@ async def check_signals(bot: Bot, target_chat: int = None):
 
     # 4️⃣ فلترة: نحتفظ بالإشارات MODERATE+ فقط (لا Early Warning)
     all_results     = [r for r in results if r and not isinstance(r, Exception)]
-    main_signals    = [r for r in all_results if r["strength"] in ("STRONG", "MODERATE")]
+    main_signals    = [r for r in all_results if r["strength"] in ("STRONG", "MODERATE")
+                       and r.get("score_pct", 0) >= MIN_SCORE]
 
     # ✅ v6.4 — diagnostic: نعرض كم عملة وصلت لكل مستوى
     strong_count   = sum(1 for r in all_results if r["strength"] == "STRONG")
@@ -1343,7 +1360,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
         fresh_main.append(r)
 
     # 6️⃣ ترتيب: الأقوى أولاً
-    fresh_main.sort(key=lambda x: x["score"], reverse=True)
+    fresh_main.sort(key=lambda x: x.get("score_pct", 0), reverse=True)
 
     if not fresh_main:
         logger.info(f"✅ لا توجد إشارات بامب جديدة (فحص {len(candidates)} عملة)")
@@ -1498,8 +1515,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔟 Short Liquidation 📉       ({PUMP_W_SHORT_LIQ} pts)\n"
         f"1️⃣1️⃣ Candle Momentum 🕯️       ({PUMP_W_CANDLE_MOM} pt)\n"
         f"1️⃣2️⃣ Early Volume Surge 📈  ({PUMP_W_EARLY_SURGE} pt)\n\n"
-        f"🚀 STRONG ≥ {PUMP_SCORE_STRONG}/{PUMP_MAX_SCORE} نقاط\n"
-        f"⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}/{PUMP_MAX_SCORE} نقاط\n"
+        f"📊 كل أساسي = 15% | كل فرعي = 5%\n"
+        f"✅ حد الإرسال: >= {MIN_SCORE}%\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n\n"
         f"🌐 المصدر: كل عملات Gate.io USDT\n"
         f"   فلتر: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M\n"
@@ -1577,9 +1594,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🚀 سكان البامب: {scanner_status}\n"
         f"   فاصل: {SIGNAL_LOOP_GAP_SECONDS}ث\n"
         f"   آخر دورة: {last_str}\n\n"
-        f"📊 نظام النقاط (المجموع: {PUMP_MAX_SCORE}):\n"
-        f"   🚀 STRONG ≥ {PUMP_SCORE_STRONG} نقاط\n"
-        f"   ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE} نقاط\n"
+        f"📊 نظام النسب المئوية:\n"
+        f"   ⭐ كل شرط أساسي = 15%\n"
+        f"   📊 كل شرط فرعي  = 5%\n"
+        f"   حد الإرسال: >= {MIN_SCORE}%\n"
         f"   Cooldown: {PUMP_SIGNAL_COOLDOWN_MIN} دقيقة\n\n"
         f"🔬 الشروط النشطة (12):\n"
         f"   ⭐ الأساسية:\n"
