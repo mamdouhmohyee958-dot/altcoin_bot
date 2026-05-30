@@ -1,5 +1,5 @@
 """
-🚀 Pump Detection Bot v10.0 — Gate.io Edition (Pro Accuracy)
+🚀 Pump Detection Bot v11.0 — Gate.io Edition (Pre-Pump Engine)
 نظام كشف البامب المحسّن بـ 12 شرط + 6 تحسينات دقة:
   ⭐ الأساسية (4): Funding Rate, CVD Divergence, Taker Buy Ratio, Order Book Imbalance
   📊 التكميلية (8): Volume Acceleration, Bid Wall, Whale Accumulation,
@@ -176,6 +176,16 @@ PUMP_CANDLE_VOL_X        = 1.5       # فوليم الشمعة >= 1.5x متوس�
 # ───── 12) Early Volume Surge — اندفاع الفوليم المبكر ─────
 PUMP_W_EARLY_SURGE       = 1         # نقطة واحدة
 PUMP_EARLY_SURGE_MIN_X   = 2.0       # فوليم أول شمعة 15m >= 2x متوسط الـ 7 شموع قبلها
+
+# ───── 🔮 Pre-Pump Detector (v11) — رصد الصعود قبل حدوثه ─────
+# يجمع 4 إشارات مبكرة في درجة واحدة (0-100):
+PREPUMP_WHALE_WEIGHT     = 30        # تراكم الحيتان
+PREPUMP_WALL_WEIGHT      = 20        # جدران الشراء
+PREPUMP_VOLSURGE_WEIGHT  = 30        # انفجار الفوليم المبكر
+PREPUMP_ACCEL_WEIGHT     = 20        # تسارع ضغط الشراء
+PREPUMP_BONUS_PCT        = 10        # لو الدرجة >= 60 → +10% للإشارة
+PREPUMP_STRONG_THRESHOLD = 60        # حد "صعود وشيك"
+PREPUMP_ELITE_THRESHOLD  = 80        # حد "انفجار وشيك جداً"
 
 # ═══════════════════════════════════════════════════════════════
 # ✅ تحديث: مجموع الأوزان الجديد = 32 + 1 + 1 = 34
@@ -1065,6 +1075,114 @@ def eval_early_volume_surge(candles_15m):
 # ✅ v8.0 — المحرك الرئيسي للبامب (12 شرط)
 # ════════════════════════════════════════════════════════════════════
 
+def eval_prepump_detector(trades, ob, candles_15m, current_price, volume_24h):
+    """
+    🔮 Pre-Pump Detector (v11) — يرصد علامات الصعود قبل ما يحصل.
+    يجمع 4 إشارات مبكرة في درجة 0-100:
+      1) تراكم الحيتان (30): صفقات شراء ضخمة متتالية
+      2) جدران الشراء (20): سيولة bid قوية تحت السعر
+      3) انفجار الفوليم المبكر (30): تسارع مفاجئ في الفوليم
+      4) تسارع ضغط الشراء (20): buy ratio بيزيد عبر الوقت
+
+    Returns: {"score": 0-100, "label", "signals": {...}}
+    """
+    score = 0
+    signals = {}
+
+    # ── 1) تراكم الحيتان (تسلسل شراء ضخم) ──
+    whale_pts = 0
+    if trades and len(trades) >= 20:
+        ts = sorted(trades, key=lambda x: x["ts"])
+        qtys = [t["qty"] for t in ts if t["qty"] > 0]
+        if qtys:
+            avg_q = sum(qtys) / len(qtys)
+            # عدد صفقات الشراء الكبيرة (>= 5x المتوسط) في آخر 30 صفقة
+            recent = ts[-30:]
+            big_buys = [t for t in recent if t["side"] == "buy" and t["qty"] >= avg_q * 5]
+            big_sells = [t for t in recent if t["side"] == "sell" and t["qty"] >= avg_q * 5]
+            n_big = len(big_buys)
+            # تراكم = شراء كبير أكتر من بيع كبير
+            if n_big >= 3 and len(big_buys) > len(big_sells):
+                whale_pts = PREPUMP_WHALE_WEIGHT
+            elif n_big >= 2 and len(big_buys) > len(big_sells):
+                whale_pts = PREPUMP_WHALE_WEIGHT * 2 // 3
+            elif n_big >= 1:
+                whale_pts = PREPUMP_WHALE_WEIGHT // 3
+            signals["whales"] = n_big
+    score += whale_pts
+
+    # ── 2) جدران الشراء (bid walls تحت السعر) ──
+    wall_pts = 0
+    if ob and ob.get("bids") and ob.get("asks") and current_price > 0:
+        p_lo = current_price * 0.97   # في نطاق -3%
+        bid_vol = sum(q for p, q in ob["bids"] if p >= p_lo)
+        ask_vol = sum(q for p, q in ob["asks"] if p <= current_price * 1.03)
+        if ask_vol > 0:
+            wall_ratio = bid_vol / ask_vol
+            if wall_ratio >= 3.0:
+                wall_pts = PREPUMP_WALL_WEIGHT
+            elif wall_ratio >= 2.0:
+                wall_pts = PREPUMP_WALL_WEIGHT * 2 // 3
+            elif wall_ratio >= 1.5:
+                wall_pts = PREPUMP_WALL_WEIGHT // 3
+            signals["wall_ratio"] = round(wall_ratio, 2)
+    score += wall_pts
+
+    # ── 3) انفجار الفوليم المبكر (15m) ──
+    vol_pts = 0
+    if candles_15m and len(candles_15m) >= 8:
+        vols = [c["volume"] for c in candles_15m]
+        baseline = sum(vols[-8:-1]) / 7 if len(vols) >= 8 else 0
+        curr = vols[-1]
+        if baseline > 0:
+            vsurge = curr / baseline
+            if vsurge >= 3.0:
+                vol_pts = PREPUMP_VOLSURGE_WEIGHT
+            elif vsurge >= 2.0:
+                vol_pts = PREPUMP_VOLSURGE_WEIGHT * 2 // 3
+            elif vsurge >= 1.5:
+                vol_pts = PREPUMP_VOLSURGE_WEIGHT // 3
+            signals["vol_surge"] = round(vsurge, 2)
+    score += vol_pts
+
+    # ── 4) تسارع ضغط الشراء (buy ratio بيزيد) ──
+    accel_pts = 0
+    if trades and len(trades) >= 30:
+        ts = sorted(trades, key=lambda x: x["ts"])
+        n = len(ts)
+        third = n // 3
+        def buy_ratio(seg):
+            bq = sum(t["qty"] for t in seg if t["side"] == "buy")
+            tot = sum(t["qty"] for t in seg)
+            return bq / tot if tot > 0 else 0
+        r_early = buy_ratio(ts[:third])
+        r_mid   = buy_ratio(ts[third:2*third])
+        r_late  = buy_ratio(ts[2*third:])
+        # تسارع = الشراء بيزيد مع الوقت + الأخير قوي
+        if r_late > r_mid > r_early and r_late >= 0.6:
+            accel_pts = PREPUMP_ACCEL_WEIGHT
+        elif r_late > r_early and r_late >= 0.58:
+            accel_pts = PREPUMP_ACCEL_WEIGHT * 2 // 3
+        elif r_late >= 0.55:
+            accel_pts = PREPUMP_ACCEL_WEIGHT // 3
+        signals["buy_accel"] = f"{r_early*100:.0f}%→{r_late*100:.0f}%"
+    score += accel_pts
+
+    score = min(100, score)
+
+    # تصنيف
+    if score >= PREPUMP_ELITE_THRESHOLD:
+        label = f"🔮🔥 انفجار وشيك جداً ({score}/100)"
+    elif score >= PREPUMP_STRONG_THRESHOLD:
+        label = f"🔮 صعود كبير وشيك ({score}/100)"
+    elif score >= 30:
+        label = f"علامات مبكرة ({score}/100)"
+    else:
+        label = f"ضعيف ({score}/100)"
+
+    return {"score": score, "label": label, "signals": signals}
+
+
 async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     """
     v10 — يقيم الـ 12 شرط + 5 فلاتر دقة على عملة واحدة
@@ -1100,14 +1218,15 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "strength": None, "strength_emoji": "🚫", "core_passed": 0,
             "strength_label": f"رفض — Wash Trading مشتبه ({wash_ratio*100:.0f}% صفقات مكررة)",
             "stop_loss": current_price*0.97, "target_1": current_price*1.03,
-            "target_2": current_price*1.06, "rr_ratio": 1.0, "atr_pct": 3.0,
-            "sr_based": False,
+            "target_2": current_price*1.06, "target_3": current_price*1.10,
+            "rr_ratio": 1.0, "atr_pct": 3.0, "trail_pct": 2.0,
+            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}},
             "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
                 ["funding_rate","cvd_divergence","taker_buy_ratio","ob_imbalance",
                  "vol_accel","bid_wall","whale_accum","ema21_cross","mtf_buy",
                  "short_liq","first_3min","early_surge"]},
             "filters": {"wash": True, "spread_ok": True, "ema50_above": True,
-                        "confluence_penalty": 0, "history_penalty": 0},
+                        "confluence_penalty": 0, "history_penalty": 0, "prepump_bonus": 0},
         }
 
     # ── فلتر Spread ──
@@ -1169,8 +1288,12 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         strength_emoji = "\u274c"
         strength_label = "تجاهل"
 
-    # v10: أهداف مبنية على S/R حقيقية
-    targets = calc_targets_and_stop(current_price, kl1h, None)
+    # 🔮 Pre-Pump Detector — رصد الصعود قبل حدوثه
+    prepump = eval_prepump_detector(trades, ob, kl15m, current_price, volume_24h)
+
+    # v11: أهداف ديناميكية مبنية على ATR + الزخم (Pre-Pump score)
+    targets = calc_targets_and_stop(current_price, kl1h, kl15m,
+                                     momentum_score=prepump["score"])
 
     return {
         "symbol":     symbol,
@@ -1184,9 +1307,12 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "stop_loss":  targets["stop_loss"],
         "target_1":   targets["target_1"],
         "target_2":   targets["target_2"],
+        "target_3":   targets.get("target_3", targets["target_2"]),
         "rr_ratio":   targets["rr_ratio"],
         "atr_pct":    targets["atr_pct"],
+        "trail_pct":  targets.get("trail_pct", 2.0),
         "sr_based":   targets.get("sr_based", False),
+        "prepump":    prepump,
         "conditions": {
             "funding_rate":     r1,
             "cvd_divergence":   r2,
@@ -1208,6 +1334,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "ema50_above":        ema50_above,
             "ema50_val":          ema50_val,
             "confluence_penalty": confluence_penalty,
+            "prepump_bonus":      PREPUMP_BONUS_PCT if prepump["score"] >= PREPUMP_STRONG_THRESHOLD else 0,
         },
     }
 
@@ -1241,83 +1368,115 @@ def find_sr_levels(candles, current_price, lookback=48):
     return supports, resistances
 
 
-def calc_targets_and_stop(current_price, candles_1h, liq_sweep_result=None):
+def calc_targets_and_stop(current_price, candles_1h, candles_15m=None, momentum_score=0):
     """
-    v10 — حساب الهدف والاستوب بناءً على:
-    - ATR حقيقي (14 شمعة 1h)
-    - مستويات دعم/مقاومة فعلية من pivot points
-    - R:R لا يقل عن 1.5
-    Returns: {"stop_loss", "target_1", "target_2", "rr_ratio", "atr_pct", "sr_based"}
+    v11 — أهداف واستوب ديناميكية بالكامل، متكيّفة مع قوة الحركة:
+    - ATR حقيقي (التقلب) + الزخم الحالي (momentum_score 0-100)
+    - كل ما الزخم أقوى، الأهداف أبعد (نمسك الصعود الكبير)
+    - الاستوب أضيق في الزخم القوي (السعر مش المفروض يرجع)
+    - مستويات S/R الحقيقية كسقف منطقي
+    Returns: {"stop_loss","target_1","target_2","target_3","rr_ratio","atr_pct","sr_based","trail_pct"}
     """
     fallback = {
         "stop_loss": current_price * 0.97,
         "target_1":  current_price * 1.03,
         "target_2":  current_price * 1.06,
-        "rr_ratio":  1.0,
+        "target_3":  current_price * 1.10,
+        "rr_ratio":  1.5,
         "atr_pct":   3.0,
         "sr_based":  False,
+        "trail_pct": 2.0,
     }
     if not candles_1h or len(candles_1h) < 15 or current_price <= 0:
         return fallback
 
-    # ── 1) ATR على آخر 14 شمعة ──
+    # ── 1) ATR على آخر 14 شمعة (1h) ──
     last = candles_1h[-15:]
     trs = []
     for i in range(1, len(last)):
         h, l, pc = last[i]["high"], last[i]["low"], last[i-1]["close"]
-        tr = max(h - l, abs(h - pc), abs(l - pc))
-        trs.append(tr)
+        trs.append(max(h - l, abs(h - pc), abs(l - pc)))
     atr = sum(trs) / len(trs) if trs else current_price * 0.01
-    atr_pct = max(1.0, min((atr / current_price * 100), 8.0))
+    atr_pct = max(1.0, min((atr / current_price * 100), 10.0))
     atr = current_price * atr_pct / 100
 
-    # ── 2) إيجاد مستويات S/R ──
+    # ── 2) ATR قصير المدى (15m) لقياس التسارع اللحظي ──
+    atr15_pct = atr_pct
+    if candles_15m and len(candles_15m) >= 8:
+        last15 = candles_15m[-8:]
+        trs15 = []
+        for i in range(1, len(last15)):
+            h, l, pc = last15[i]["high"], last15[i]["low"], last15[i-1]["close"]
+            trs15.append(max(h - l, abs(h - pc), abs(l - pc)))
+        if trs15:
+            atr15 = sum(trs15) / len(trs15)
+            atr15_pct = max(0.5, min((atr15 / current_price * 100), 10.0))
+
+    # ── 3) معامل الزخم: 0 (ضعيف) → 1 (انفجاري) ──
+    # momentum_score من 0-100، نحوله لمعامل 0.5-2.0
+    mom = max(0, min(momentum_score, 100)) / 100.0
+    # كل ما الزخم أعلى، الأهداف أبعد (1.0x → 2.5x)
+    target_mult = 1.0 + (mom * 1.5)
+
+    # ── 4) مستويات S/R ──
     supports, resistances = find_sr_levels(candles_1h, current_price)
 
-    # ── 3) الاستوب: أقرب دعم تحت السعر - ربع ATR ──
+    # ── 5) الاستوب الديناميكي ──
+    # في الزخم القوي: استوب أضيق (1.2x ATR). في الزخم الضعيف: أوسع (2x ATR)
+    stop_atr_mult = 2.0 - (mom * 0.8)   # 2.0 → 1.2
+    stop_by_atr = current_price - (atr * stop_atr_mult)
     if supports:
-        nearest_support = supports[-1]   # أقرب دعم تحت السعر
+        nearest_support = supports[-1]
         stop_by_sr = nearest_support - (atr * 0.25)
+        # نأخذ الأعلى (الأضيق) بين الاتنين عشان منخسرش كتير
+        stop_loss = max(stop_by_atr, stop_by_sr)
     else:
-        nearest_support = min(c["low"] for c in candles_1h[-10:])
-        stop_by_sr = nearest_support - (atr * 0.5)
+        stop_loss = stop_by_atr
+    # حدود أمان
+    stop_loss = max(stop_loss, current_price * 0.92)   # أقصى خسارة 8%
+    stop_loss = min(stop_loss, current_price * 0.985)   # مش قريب أوي
 
-    stop_loss = max(stop_by_sr, current_price * 0.95)   # حد أقصى خسارة 5%
-    stop_loss = min(stop_loss, current_price * 0.985)    # مش قريب أوي
-
-    # ── 4) الهدف 1: أقرب مقاومة أو 1.5x R:R ──
     risk = current_price - stop_loss
     if risk <= 0:
         risk = atr
-    target_by_rr_1 = current_price + (risk * 1.5)
-    if resistances:
-        nearest_res = resistances[0]    # أقرب مقاومة فوق السعر
-        # نأخذ الأقل بين الهدفين (المقاومة الأقرب أكثر واقعية)
-        target_1 = min(target_by_rr_1, nearest_res * 0.998) if nearest_res > current_price * 1.005 else target_by_rr_1
-        sr_based = True
-    else:
-        target_1 = target_by_rr_1
-        sr_based = False
 
-    # ── 5) الهدف 2: المقاومة التالية أو 3x R:R ──
-    target_by_rr_2 = current_price + (risk * 3.0)
-    if resistances and len(resistances) >= 2:
-        second_res = resistances[1]
-        target_2 = min(target_by_rr_2, second_res * 0.998) if second_res > target_1 * 1.005 else target_by_rr_2
-    elif resistances and resistances[0] > target_1 * 1.005:
-        target_2 = min(target_by_rr_2, resistances[0] * 0.998)
-    else:
-        target_2 = target_by_rr_2
+    # ── 6) الأهداف الديناميكية (3 أهداف) ──
+    # المسافات مبنية على ATR × معامل الزخم
+    t1_dist = atr * 1.5 * target_mult
+    t2_dist = atr * 3.0 * target_mult
+    t3_dist = atr * 5.0 * target_mult
+
+    target_1 = current_price + t1_dist
+    target_2 = current_price + t2_dist
+    target_3 = current_price + t3_dist
+
+    # ── 7) تعديل بالمقاومات الحقيقية (لا نتجاوزها بسذاجة) ──
+    sr_based = False
+    if resistances:
+        res_above = [r for r in resistances if r > current_price * 1.005]
+        if res_above:
+            sr_based = True
+            # الهدف الأول لا يتعدى أقرب مقاومة بشكل مبالغ
+            nearest = res_above[0]
+            if target_1 > nearest * 1.02:
+                target_1 = nearest * 0.998
+            if len(res_above) >= 2 and target_2 > res_above[1] * 1.02:
+                target_2 = res_above[1] * 0.998
 
     rr_ratio = (target_1 - current_price) / risk if risk > 0 else 1.5
+
+    # ── 8) نسبة الـ Trailing Stop (للزخم القوي = trail أضيق) ──
+    trail_pct = round(max(1.0, atr15_pct * (1.5 - mom * 0.5)), 2)
 
     return {
         "stop_loss": stop_loss,
         "target_1":  target_1,
         "target_2":  target_2,
+        "target_3":  target_3,
         "rr_ratio":  rr_ratio,
         "atr_pct":   atr_pct,
         "sr_based":  sr_based,
+        "trail_pct": trail_pct,
     }
 
 
@@ -1347,11 +1506,15 @@ def format_pump_signal_message(result):
     sl = result["stop_loss"]
     t1 = result["target_1"]
     t2 = result["target_2"]
+    t3 = result.get("target_3", t2)
     sl_pct = (sl - price) / price * 100
     t1_pct = (t1 - price) / price * 100
     t2_pct = (t2 - price) / price * 100
+    t3_pct = (t3 - price) / price * 100
     rr = result.get("rr_ratio", 1.5)
     atr_pct = result.get("atr_pct", 3.0)
+    trail_pct = result.get("trail_pct", 2.0)
+    prepump = result.get("prepump", {"score": 0, "label": "", "signals": {}})
 
     e = _md2_escape  # اختصار
 
@@ -1368,12 +1531,13 @@ def format_pump_signal_message(result):
         for k in core_keys
     )
     supp_pct = sum(5 for k in supp_keys if result["conditions"][k]["pass"])
-    # خصومات الدقة
+    # خصومات الدقة والمكافآت
     filters = result.get("filters", {})
     penalty = filters.get("confluence_penalty", 0) + filters.get("history_penalty", 0)
+    prepump_bonus = filters.get("prepump_bonus", 0)
     spread_warn = "" if filters.get("spread_ok", True) else f" ⚠️spread {filters.get('spread_pct',0)*100:.2f}%"
     ema50_warn  = "" if filters.get("ema50_above", True) else " ⚠️تحت EMA50/4h"
-    score_pct = max(0, core_pct + supp_pct - penalty)
+    score_pct = min(100, max(0, core_pct + supp_pct + prepump_bonus - penalty))
     vol_cmc_str = ""
     if result.get("volume_cmc_total", 0) > 0:
         cmc_vol = result["volume_cmc_total"]
@@ -1382,21 +1546,29 @@ def format_pump_signal_message(result):
         else:
             vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `${cmc_vol/1_000:.0f}K`"
 
+    # سطر Pre-Pump Detector
+    prepump_str = ""
+    if prepump["score"] >= PREPUMP_STRONG_THRESHOLD:
+        prepump_str = f"\n{e(prepump['label'])}"
+
     header_lines = [
         f"{result['strength_emoji']} *إشارة بامب محتملة*",
         "━" * 18,
         f"💎 *العملة:* `{e(sym)}USDT`",
         f"💰 *السعر:* `{e(fmt_price(price))}`",
         f"⭐ *الأساسية:* {result['core_passed']}/4",
-        f"📊 *النسبة:* {score_pct}% \({core_pct}% أساسية \+ {supp_pct}% فرعية{e(spread_warn)}{e(ema50_warn)}\)",
+        f"📊 *النسبة:* {score_pct}% \\({core_pct}% أساسية \\+ {supp_pct}% فرعية" + (f" \\+ {prepump_bonus}% مبكر" if prepump_bonus else "") + f"{e(spread_warn)}{e(ema50_warn)}\\)",
         f"🎯 *القوة:* {e(result['strength_label'])}",
+        f"🔮 *Pre\\-Pump:* {prepump['score']}/100",
         vol_cmc_str,
         "",
         "━━━ 📍 *الدخول والخروج* ━━━",
         f"🟢 *الدخول:* `{e(fmt_price(price))}`",
-        f"🎯 *الهدف 1:* `{e(fmt_price(t1))}` \\({e(f'{t1_pct:+.2f}%')}\\)",
+        f"🎯 *الهدف 1:* `{e(fmt_price(t1))}` \\({e(f'{t1_pct:+.2f}%')}\\)" + (" 📌S/R" if result.get('sr_based') else ""),
         f"🏆 *الهدف 2:* `{e(fmt_price(t2))}` \\({e(f'{t2_pct:+.2f}%')}\\)",
+        f"🚀 *الهدف 3:* `{e(fmt_price(t3))}` \\({e(f'{t3_pct:+.2f}%')}\\)",
         f"🛑 *الاستوب:* `{e(fmt_price(sl))}` \\({e(f'{sl_pct:+.2f}%')}\\)",
+        f"📈 *Trailing:* `{e(f'{trail_pct:.1f}%')}` \\(استوب متحرك\\)",
         f"⚖️ *R:R:* `{e(f'{rr:.2f}')}` \\| *ATR:* `{e(f'{atr_pct:.1f}%')}`",
         "",
     ]
@@ -1425,6 +1597,19 @@ def format_pump_signal_message(result):
         detail_lines.append(f"{prefix}{name} \\({pts}p\\): {lbl}")
     detail_lines.append("")
     detail_lines.append("⭐ \\= شرط أساسي")
+    # تفاصيل Pre-Pump Detector
+    pp_sig = prepump.get("signals", {})
+    if pp_sig:
+        detail_lines.append("")
+        detail_lines.append(f"🔮 Pre\\-Pump \\({prepump['score']}/100\\):")
+        if "whales" in pp_sig:
+            detail_lines.append(f"  🐋 صفقات كبيرة: {pp_sig['whales']}")
+        if "wall_ratio" in pp_sig:
+            detail_lines.append(f"  🧱 جدار شراء: {e(str(pp_sig['wall_ratio']))}x")
+        if "vol_surge" in pp_sig:
+            detail_lines.append(f"  📊 انفجار فوليم: {e(str(pp_sig['vol_surge']))}x")
+        if "buy_accel" in pp_sig:
+            detail_lines.append(f"  ⚡ تسارع شراء: {e(str(pp_sig['buy_accel']))}")
     detail_text = "\n".join(detail_lines)
     # نلف الجزء كله في spoiler واحد
     spoiler_block = f"👁 *اضغط لإظهار التفاصيل:*\n||{detail_text}||"
@@ -1647,9 +1832,11 @@ async def check_signals(bot: Bot, target_chat: int = None):
                                 if price_chg < HISTORY_FAIL_THRESHOLD:
                                     hist_penalty = HISTORY_PENALTY_PCT
                     result["filters"]["history_penalty"] = hist_penalty
-                    result["score_pct"]  = max(0, core_p + supp_p
+                    prepump_bonus = result["filters"].get("prepump_bonus", 0)
+                    result["score_pct"]  = min(100, max(0, core_p + supp_p
+                                               + prepump_bonus
                                                - result["filters"].get("confluence_penalty", 0)
-                                               - hist_penalty)
+                                               - hist_penalty))
                     result["core_pct"]   = core_p
                     result["supp_pct"]   = supp_p
                     return result
@@ -2006,7 +2193,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         last_str = "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ Pump Detection Bot — v10.0 (Pro)\n\n"
+        f"✅ Pump Detection Bot — v11.0 (Pre-Pump)\n\n"
         f"🌐 المصدر: كل Gate.io USDT\n"
         f"   فلتر 1: فوليم >= ${PRESCAN_MIN_VOL_24H/1_000:.0f}K\n"
         f"   فلتر 2: تغيّر بين {PRESCAN_MIN_CHANGE_24H}% و+{PRESCAN_MAX_CHANGE_24H}%\n"
@@ -2042,7 +2229,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📐 Spread Filter: < {SPREAD_MAX_PCT*100:.1f}%\n"
         f"📈 EMA50/4h Trend Filter نشط\n"
         f"⚡ Confluence Check نشط\n"
-        f"📊 Score History Penalty: {HISTORY_PENALTY_PCT}%"
+        f"📊 Score History Penalty: {HISTORY_PENALTY_PCT}%\n"
+        f"🔮 Pre-Pump Engine نشط (رصد مبكر)\n"
+        f"🎯 أهداف/استوب ديناميكية حسب الزخم\n"
+        f"📈 Trailing Stop متكيّف"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2065,7 +2255,7 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *Pump Detection Bot v10.0 Pro — Gate.io*\n"
+                "🟢 *Pump Detection Bot v11.0 — Gate.io*\n"
                 f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
                 f"🌐 يفحص كل عملات Gate.io USDT (2500+ عملة)\n"
         f"⚡ Pre-scan سريع → تحليل كامل للنشطة فقط\n"
@@ -2123,7 +2313,7 @@ def main():
     # السكان يبدأ من post_init كـ background task
 
     print("="*60)
-    print("🚀 Pump Detection Bot v10.0 — Gate.io Edition (Pro Accuracy)")
+    print("🚀 Pump Detection Bot v11.0 — Gate.io Edition (Pre-Pump Engine)")
     print(f"🌐 المصدر: كل Gate.io USDT (2500+ عملة)")
     print(f"   المرحلة 1 — Pre-scan: فوليم >= ${PRESCAN_MIN_VOL_24H/1_000:.0f}K، تغيّر {PRESCAN_MIN_CHANGE_24H}% ~ +{PRESCAN_MAX_CHANGE_24H}%")
     print(f"   المرحلة 2 — تحليل كامل (7 طلبات/عملة) على النشطة فقط")
