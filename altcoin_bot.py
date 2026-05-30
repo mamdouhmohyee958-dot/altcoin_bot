@@ -70,8 +70,8 @@ GATE_PARALLEL_LIMIT       = 30         # طلبات متوازية
 
 # ── Pre-scan Filter (المرحلة 1) ──
 PRESCAN_MIN_VOL_24H       = 25_000     # فوليم 24h ≥ $25K
-PRESCAN_MIN_CHANGE_24H    = -8.0       # تغيّر 24h > -8% (مش انهيار)
-PRESCAN_MAX_CHANGE_24H    = 12.0       # تغيّر 24h < +12% (مش فات القطار)
+PRESCAN_MIN_CHANGE_24H    = -15.0      # تغيّر 24h > -15% (مش انهيار)
+PRESCAN_MAX_CHANGE_24H    = 25.0       # تغيّر 24h < +25% (مش فات القطار)
 PRESCAN_MIN_ACTIVITY      = 0.3        # range_24h / price ≥ 0.3% (في حركة)
 PRESCAN_LARGE_VOL         = 3_000_000  # فوليم ≥ $3M = تتفحص دايماً بغض النظر عن التغيّر
 PRESCAN_MAX_PULLBACK      = 15.0       # لو القمة أعلى من السعر الحالي بـ 15%+ = بامب وراح
