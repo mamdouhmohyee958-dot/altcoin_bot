@@ -3,7 +3,7 @@
 نظام كشف البامب المحسّن بـ 12 شرط + 6 تحسينات دقة:
   ⭐ الأساسية (4): Funding Rate, CVD Divergence, Taker Buy Ratio, Order Book Imbalance
   📊 التكميلية (8): Volume Acceleration, Bid Wall, Whale Accumulation,
-                    EMA21 Crossover, Multi-TF Buy Pressure, Short Liquidation,
+                    VWAP Position, Multi-TF Buy Pressure, Liquidity Grab,
                     Candle Momentum, Early Volume Surge
   🔒 فلاتر الدقة: Anti-Wash Trading, Confluence Check, EMA50/4h Trend,
                   Spread Filter, Score History Penalty, S/R Targets
@@ -873,37 +873,45 @@ def eval_whale_accumulation(trades, volume_24h):
     }
 
 
-def eval_ema21_crossover(candles_1h):
+def eval_vwap_position(candles_1h):
     """
-    الشرط 8 — 📊 EMA21 Crossover (max 3 pts)
-    آخر 30 كاندل 1h: نحسب EMA21.
-      - السعر الحالي فوق الـ EMA + الكاندل السابقة كانت تحتها = crossover للتو → 3 نقاط
-      - السعر فوق الـ EMA بدون crossover = نقطة واحدة
+    الشرط 8 — 📍 VWAP Position (max 3 pts) — بديل EMA21 (أسرع وأدق)
+    VWAP = متوسط السعر المرجّح بالفوليم. السعر فوقه = المشترين مسيطرين.
+    أدق من EMA لأنه بيدخل الفوليم في الحساب مش بس السعر.
+      - السعر فوق VWAP + المسافة بتكبر (زخم صاعد) = 3 نقاط
+      - السعر فوق VWAP بس = نقطة واحدة
     """
-    if not candles_1h or len(candles_1h) < PUMP_EMA21_PERIOD + 2:
+    if not candles_1h or len(candles_1h) < 10:
         return {"pass": False, "score": 0, "value": 0, "label": "كلاينز غير كافية"}
-    closes = [c["close"] for c in candles_1h[-PUMP_EMA21_CANDLES:]]
-    if len(closes) < PUMP_EMA21_PERIOD + 2:
-        closes = [c["close"] for c in candles_1h]
-    # EMA حتى الكاندل الحالية، وEMA حتى الكاندل السابقة
-    ema_now  = _ema_last(closes, PUMP_EMA21_PERIOD)
-    ema_prev = _ema_last(closes[:-1], PUMP_EMA21_PERIOD)
-    if ema_now is None or ema_prev is None:
-        return {"pass": False, "score": 0, "value": 0, "label": "EMA غير محسوب"}
-    price_now  = closes[-1]
-    price_prev = closes[-2]
+    # نحسب VWAP على آخر 24 شمعة (يوم كامل تقريباً)
+    window = candles_1h[-24:] if len(candles_1h) >= 24 else candles_1h
+    cum_pv = 0.0
+    cum_v  = 0.0
+    for c in window:
+        typical = (c["high"] + c["low"] + c["close"]) / 3
+        cum_pv += typical * c["volume"]
+        cum_v  += c["volume"]
+    if cum_v <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "فوليم صفر"}
+    vwap = cum_pv / cum_v
+    price = window[-1]["close"]
+    if vwap <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "VWAP غير صالح"}
+    dist_pct = (price - vwap) / vwap * 100
 
-    crossed_up = (price_prev < ema_prev) and (price_now > ema_now)
-    above_only = price_now > ema_now
+    # هل المسافة فوق VWAP بتكبر؟ (زخم صاعد)
+    prev_price = window[-2]["close"] if len(window) >= 2 else price
+    prev_dist = (prev_price - vwap) / vwap * 100
+    expanding = dist_pct > prev_dist
 
-    if crossed_up:
-        return {"pass": True, "score": PUMP_W_EMA21_CROSS, "value": price_now - ema_now,
-                "label": f"📊 Crossover للتو فوق EMA21 ({fmt_price(price_now)} > {fmt_price(ema_now)})"}
-    if above_only:
-        return {"pass": True, "score": 1, "value": price_now - ema_now,
-                "label": f"السعر فوق EMA21 بدون crossover"}
-    return {"pass": False, "score": 0, "value": price_now - ema_now,
-            "label": f"السعر تحت EMA21"}
+    if dist_pct > 0 and expanding and dist_pct >= 0.5:
+        return {"pass": True, "score": PUMP_W_EMA21_CROSS, "value": dist_pct,
+                "label": f"📍 فوق VWAP +{dist_pct:.2f}% ومتسع 🔥 (مشترين مسيطرين)"}
+    if dist_pct > 0:
+        return {"pass": True, "score": 1, "value": dist_pct,
+                "label": f"📍 فوق VWAP +{dist_pct:.2f}%"}
+    return {"pass": False, "score": 0, "value": dist_pct,
+            "label": f"تحت VWAP {dist_pct:.2f}%"}
 
 
 def eval_multi_tf_buy_pressure(mtf_candles):
@@ -943,43 +951,43 @@ def eval_multi_tf_buy_pressure(mtf_candles):
     }
 
 
-def eval_short_liquidation(oi_history, funding_rate, candles_1h):
+def eval_liquidity_grab(candles_15m, candles_1h):
     """
-    الشرط 10 — 📉 Short Liquidation (max 4 pts) — أساسي القوة
-      أ) Open Interest زاد ≥ 10% في آخر 3 ساعات + السعر ثابت/نازل = شورتات جديدة
-      ب) Funding Rate سالب = شورتات أكتر من اللونجات
-    الاتنين = 4 نقاط | واحد بس = 2 نقاط
+    الشرط 10 — 🎯 Liquidity Grab (max 4 pts) — بديل Short Liquidation (أسرع)
+    السعر يكسر قاع سابق (يصطاد ستوبات البائعين) وبعدين يرتد بسرعة فوقه.
+    ده انعكاس قوي = المؤسسات بتجمّع عند القيعان.
+      - كسر قاع + إغلاق فوقه + شمعة خضراء قوية = 4 نقاط
+      - فتيل سفلي طويل (رفض القاع) = 2 نقاط
     """
-    cond_oi = False
-    oi_change_pct = 0.0
-    if oi_history and len(oi_history) >= 2:
-        oi_now = oi_history[-1]["oi"]
-        # القراءة قبل ~3 ساعات (أو أقدم متاح)
-        idx = max(0, len(oi_history) - 1 - PUMP_SHORT_OI_HOURS)
-        oi_old = oi_history[idx]["oi"]
-        if oi_old > 0:
-            oi_change_pct = (oi_now - oi_old) / oi_old * 100
-        # تغيّر السعر في نفس الفترة (آخر 3 شموع 1h)
-        price_flat_or_down = True
-        if candles_1h and len(candles_1h) >= PUMP_SHORT_OI_HOURS + 1:
-            p_old = candles_1h[-(PUMP_SHORT_OI_HOURS + 1)]["close"]
-            p_now = candles_1h[-1]["close"]
-            if p_old > 0:
-                price_chg = (p_now - p_old) / p_old * 100
-                price_flat_or_down = price_chg <= PUMP_SHORT_PRICE_FLAT
-        cond_oi = (oi_change_pct >= PUMP_SHORT_OI_INCREASE * 100) and price_flat_or_down
+    if not candles_15m or len(candles_15m) < 10:
+        return {"pass": False, "score": 0, "value": 0, "label": "كلاينز 15m غير كافية"}
 
-    cond_funding = funding_rate is not None and funding_rate < 0
+    recent = candles_15m[-10:]
+    last = recent[-1]
+    # أدنى قاع في آخر 8 شموع قبل الأخيرة
+    prior_low = min(c["low"] for c in recent[:-1])
 
-    if cond_oi and cond_funding:
-        return {"pass": True, "score": PUMP_W_SHORT_LIQ, "value": oi_change_pct,
-                "label": f"📉 OI +{oi_change_pct:.1f}% (سعر ثابت) + Funding سالب = شورتات محاصرة 🔥"}
-    if cond_oi or cond_funding:
-        reason = (f"OI +{oi_change_pct:.1f}%" if cond_oi else "Funding سالب")
-        return {"pass": True, "score": 2, "value": oi_change_pct,
-                "label": f"📉 إشارة شورت جزئية ({reason})"}
-    return {"pass": False, "score": 0, "value": oi_change_pct,
-            "label": f"لا ضغط شورت (OI {oi_change_pct:+.1f}%)"}
+    # 1) كسر القاع وارتداد: الشمعة الأخيرة نزلت تحت القاع لكن أغلقت فوقه
+    wicked_below = last["low"] < prior_low
+    closed_above = last["close"] > prior_low
+    is_green     = last["close"] > last["open"]
+
+    # حجم الفتيل السفلي
+    candle_range = last["high"] - last["low"]
+    if candle_range <= 0:
+        return {"pass": False, "score": 0, "value": 0, "label": "range صفر"}
+    body_low = min(last["open"], last["close"])
+    lower_wick = body_low - last["low"]
+    wick_ratio = lower_wick / candle_range
+
+    if wicked_below and closed_above and is_green:
+        return {"pass": True, "score": PUMP_W_SHORT_LIQ, "value": wick_ratio,
+                "label": f"🎯 صيد سيولة: كسر القاع وارتد 🔥 (انعكاس قوي)"}
+    if wick_ratio >= 0.5:
+        return {"pass": True, "score": 2, "value": wick_ratio,
+                "label": f"🎯 فتيل سفلي {wick_ratio*100:.0f}% (رفض القاع)"}
+    return {"pass": False, "score": 0, "value": wick_ratio,
+            "label": f"لا صيد سيولة (فتيل {wick_ratio*100:.0f}%)"}
 
 
 def eval_bid_wall(ob, current_price):
@@ -1242,9 +1250,9 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     r5  = eval_volume_acceleration(kl1h)
     r6  = eval_bid_wall(ob, current_price)
     r7  = eval_whale_accumulation(trades, volume_24h)
-    r8  = eval_ema21_crossover(kl1h)
+    r8  = eval_vwap_position(kl1h)
     r9  = eval_multi_tf_buy_pressure(mtf)
-    r10 = eval_short_liquidation(oi_hist, funding, kl1h)
+    r10 = eval_liquidity_grab(kl15m, kl1h)
     r11 = eval_candle_momentum(kl15m)
     r12 = eval_early_volume_surge(kl15m)
 
@@ -1542,13 +1550,23 @@ def format_pump_signal_message(result):
     spread_warn = "" if filters.get("spread_ok", True) else f" ⚠️spread {filters.get('spread_pct',0)*100:.2f}%"
     ema50_warn  = "" if filters.get("ema50_above", True) else " ⚠️تحت EMA50/4h"
     score_pct = min(100, max(0, core_pct + supp_pct + prepump_bonus - penalty))
-    vol_cmc_str = ""
-    if result.get("volume_cmc_total", 0) > 0:
-        cmc_vol = result["volume_cmc_total"]
-        if cmc_vol >= 1_000_000:
-            vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `${cmc_vol/1_000_000:.2f}M`"
-        else:
-            vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `${cmc_vol/1_000:.0f}K`"
+
+    def _fmt_vol(v):
+        if v >= 1_000_000_000:
+            return f"${v/1_000_000_000:.2f}B"
+        if v >= 1_000_000:
+            return f"${v/1_000_000:.2f}M"
+        return f"${v/1_000:.0f}K"
+
+    cmc_vol  = result.get("volume_cmc_total", 0)
+    gate_vol = result.get("volume_24h", 0)
+    if cmc_vol > 0:
+        vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `{e(_fmt_vol(cmc_vol))}`"
+    elif gate_vol > 0:
+        # CMC غير متاح — نعرض فوليم Gate.io كبديل
+        vol_cmc_str = f"\n📡 *فوليم Gate\\.io:* `{e(_fmt_vol(gate_vol))}` \\(الإجمالي غير متاح\\)"
+    else:
+        vol_cmc_str = ""
 
     # سطر Pre-Pump Detector
     prepump_str = ""
@@ -1586,9 +1604,9 @@ def format_pump_signal_message(result):
         ("",   "Volume Accel\\.",    c["vol_accel"]),
         ("",   "Bid Wall",            c["bid_wall"]),
         ("",   "Whale Accum\\.",     c["whale_accum"]),
-        ("",   "EMA21 Crossover",    c["ema21_cross"]),
+        ("",   "VWAP Position 📍",   c["ema21_cross"]),
         ("",   "Multi\\-TF Buy",     c["mtf_buy"]),
-        ("",   "Short Liquidation",  c["short_liq"]),
+        ("",   "Liquidity Grab 🎯",  c["short_liq"]),
         ("",   "Candle Momentum 🕯️", c["first_3min"]),
         ("",   "Early Surge 📈",    c["early_surge"]),
     ]
@@ -1791,6 +1809,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
                     quote = cmc.get("quote", {}).get("USD", {})
                     d["volume_cmc_total"] = float(quote.get("volume_24h", 0) or 0)
                 else:
+                    # العملة مش في الـ top CMC — نعلّمها لجلب فوليمها مباشرة لاحقاً
                     d["volume_cmc_total"] = 0
         except Exception as e:
             logger.warning(f"إثراء CMC فشل: {e} — نكمل بالأسماء من Gate فقط")
@@ -1821,6 +1840,14 @@ async def check_signals(bot: Bot, target_chat: int = None):
                     W_CORE_MAX = 6
                     core_p = sum(round(conds[k]["score"] / W_CORE_MAX * 15) for k in core_ks)
                     supp_p = sum(5 for k in supp_ks if conds[k]["pass"])
+                    # منع التكرار: الـ Pre-Pump بيستخدم whale/bid_wall/early_surge
+                    # لو الـ Pre-Pump bonus اشتغل، منخصمش، بس منحسبش الإشارات دي مرتين بكامل قيمتها
+                    prepump_active = result["filters"].get("prepump_bonus", 0) > 0
+                    if prepump_active:
+                        overlap_keys = ["whale_accum", "bid_wall", "early_surge"]
+                        overlap_dbl = sum(5 for k in overlap_keys if conds[k]["pass"])
+                        # نخصم نص قيمة المكرر (عشان الـ Pre-Pump أخدهم بالفعل)
+                        supp_p -= overlap_dbl // 2
                     # Score History Penalty: لو سبق إرسالها وما تحركتش
                     hist_penalty = 0
                     sym = coin["symbol"]
@@ -1913,6 +1940,14 @@ async def check_signals(bot: Bot, target_chat: int = None):
 
     for r in fresh_main:
         try:
+            # لو الفوليم الإجمالي مش متاح (العملة خارج top CMC) نجيبه مباشرة
+            if not r.get("volume_cmc_total", 0):
+                try:
+                    q = await fetch_cmc_quote(session, r["symbol"])
+                    if q and q.get("volume_24h", 0) > 0:
+                        r["volume_cmc_total"] = q["volume_24h"]
+                except Exception:
+                    pass
             r["btc_warning"] = btc_warn_text
             r["btc_status_full"] = btc_info if btc_info else None
             msg = format_pump_signal_message(r)
@@ -2051,9 +2086,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"5️⃣ Volume Acceleration       ({PUMP_W_VOL_ACCEL} pts)\n"
         f"6️⃣ Bid Wall (دعم قوي)         ({PUMP_W_BID_WALL} pts)\n"
         f"7️⃣ Whale Accumulation 🐋      ({PUMP_W_WHALE_ACCUM} pts)\n"
-        f"8️⃣ EMA21 Crossover 📊         ({PUMP_W_EMA21_CROSS} pts)\n"
+        f"8️⃣ VWAP Position 📍           ({PUMP_W_EMA21_CROSS} pts)\n"
         f"9️⃣ Multi-TF Buy Pressure 🔄   ({PUMP_W_MTF_BUY} pts)\n"
-        f"🔟 Short Liquidation 📉       ({PUMP_W_SHORT_LIQ} pts)\n"
+        f"🔟 Liquidity Grab 🎯         ({PUMP_W_SHORT_LIQ} pts)\n"
         f"1️⃣1️⃣ Candle Momentum 🕯️       ({PUMP_W_CANDLE_MOM} pt)\n"
         f"1️⃣2️⃣ Early Volume Surge 📈  ({PUMP_W_EARLY_SURGE} pt)\n\n"
         f"📊 كل أساسي = 15% | كل فرعي = 5%\n"
@@ -2069,6 +2104,55 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+
+
+async def cmd_gainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /gainers — أعلى 20 عملة رابحة على Gate.io (USDT)"""
+    await update.message.reply_text("⏳ جاري جلب أعلى العملات ربحاً...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            gate_tickers = await fetch_gate_tickers(session)
+        if not gate_tickers:
+            await update.message.reply_text("❌ فشل جلب البيانات من Gate.io")
+            return
+
+        coins = []
+        for t in gate_tickers:
+            d = parse_gate_ticker(t)
+            if not d: continue
+            if d["symbol"] in EXCLUDED_SYMBOLS: continue
+            if d["symbol"] in HARAM_SYMBOLS: continue
+            if d["price"] <= 0: continue
+            # نتجاهل العملات الميتة (فوليم أقل من الحد)
+            if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
+            coins.append(d)
+
+        # ترتيب تنازلي حسب التغيّر 24h
+        coins.sort(key=lambda x: x["price_change_24h"], reverse=True)
+        top = coins[:20]
+
+        if not top:
+            await update.message.reply_text("لا توجد عملات مطابقة.")
+            return
+
+        def fmt_v(v):
+            if v >= 1_000_000:
+                return f"${v/1_000_000:.1f}M"
+            return f"${v/1_000:.0f}K"
+
+        lines = ["🚀 أعلى 20 عملة رابحة (Gate.io)", "━━━━━━━━━━━━━━━━━━━━"]
+        for i, c in enumerate(top, 1):
+            lines.append(
+                f"{i}. {c['symbol']}USDT  "
+                f"+{c['price_change_24h']:.1f}%  "
+                f"| {fmt_v(c['volume_24h'])}"
+            )
+        lines.append("━━━━━━━━━━━━━━━━━━━━")
+        lines.append("⚠️ نسبة ربح عالية = ممكن القطار فات")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ: {e}")
 
 
 async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2222,9 +2306,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   5. Volume Acceleration\n"
         f"   6. Bid Wall (دعم شراء قوي)\n"
         f"   7. Whale Accumulation 🐋\n"
-        f"   8. EMA21 Crossover 📊\n"
+        f"   8. VWAP Position 📍\n"
         f"   9. Multi-TF Buy Pressure 🔄\n"
-        f"   10. Short Liquidation 📉\n"
+        f"   10. Liquidity Grab 🎯\n"
         f"   11. Candle Momentum 🕯️\n"
         f"   12. Early Volume Surge 📈\n\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n"
@@ -2302,6 +2386,7 @@ def main():
     app.add_handler(CommandHandler("btc",     cmd_btc))
     app.add_handler(CommandHandler("haram",   cmd_haram))
     app.add_handler(CommandHandler("volume",  cmd_volume))
+    app.add_handler(CommandHandler("gainers", cmd_gainers))
 
     load_seen_coins()
     load_seen_signals()   # ✅ v6.4
@@ -2333,9 +2418,9 @@ def main():
     print(f"   5. Volume Acceleration        ({PUMP_W_VOL_ACCEL} pts)")
     print(f"   6. Bid Wall                   ({PUMP_W_BID_WALL} pts)")
     print(f"   7. Whale Accumulation         ({PUMP_W_WHALE_ACCUM} pts)")
-    print(f"   8. EMA21 Crossover            ({PUMP_W_EMA21_CROSS} pts)")
+    print(f"   8. VWAP Position              ({PUMP_W_EMA21_CROSS} pts)")
     print(f"   9. Multi-TF Buy Pressure      ({PUMP_W_MTF_BUY} pts)")
-    print(f"   10. Short Liquidation         ({PUMP_W_SHORT_LIQ} pts)")
+    print(f"   10. Liquidity Grab            ({PUMP_W_SHORT_LIQ} pts)")
     print(f"   11. Candle Momentum          ({PUMP_W_CANDLE_MOM} pt)")
     print(f"   12. Early Volume Surge     ({PUMP_W_EARLY_SURGE} pt)")
     print(f"   ───────────────────────────")
