@@ -59,7 +59,7 @@ HISTORY_FAIL_THRESHOLD   = 0.005   # السعر ما تغيرش أكتر من 0.
 
 # ==================== اعدادات الاشارات ====================
 MIN_SCORE          = 45       # الحد الأدنى للإرسال (نسبة مئوية %)
-MIN_VOL_FOR_SIGNAL = 50_000
+MIN_VOL_FOR_SIGNAL = 25_000
 
 # ✅ جديد v3.1: سكان البامب المستمر
 SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
@@ -69,7 +69,7 @@ GATE_MAX_CANDIDATES       = 5000       # فحص كل عملات Gate.io
 GATE_PARALLEL_LIMIT       = 30         # طلبات متوازية
 
 # ── Pre-scan Filter (المرحلة 1) ──
-PRESCAN_MIN_VOL_24H       = 50_000     # فوليم 24h ≥ $50K
+PRESCAN_MIN_VOL_24H       = 25_000     # فوليم 24h ≥ $25K
 PRESCAN_MIN_CHANGE_24H    = -8.0       # تغيّر 24h > -8% (مش انهيار)
 PRESCAN_MAX_CHANGE_24H    = 12.0       # تغيّر 24h < +12% (مش فات القطار)
 PRESCAN_MIN_ACTIVITY      = 0.3        # range_24h / price ≥ 0.3% (في حركة)
