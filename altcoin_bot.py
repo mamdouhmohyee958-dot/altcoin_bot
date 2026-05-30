@@ -289,17 +289,17 @@ def save_haram_symbols():
 
 # ==================== قوائم الاستبعاد ====================
 EXCLUDED_SYMBOLS = {
-    "BTC","ETH","BNB","XRP","SOL","ADA","DOGE","TRX","AVAX","SHIB",
+    "BTC","ETH","BNB","XRP","SOL","ADA","TRX","AVAX","SHIB",
     "DOT","LINK","MATIC","LTC","BCH","XLM","ETC","UNI","ATOM","NEAR",
-    "FIL","ICP","HBAR","VET","ALGO","EGLD","TON","SUI","APT","OP",
-    "ARB","INJ","SEI","TIA","PYTH","JUP","WLD","RENDER","FET","TAO",
-    "IMX","GRT","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
-    "SAND","MANA","AXS","ENJ","CHZ","FLOW","GALA","THETA","FTM",
-    "ONE","ROSE","ZIL","ICX","QTUM","ZEC","XMR","DASH","DCR","XTZ",
-    "EOS","TRB","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
-    "ONT","ZEN","SC","DGB","RVN","IOST","STORJ","ANKR","CKB","CELR",
+    "FIL","TON","APT","OP",
+    "ARB","JUP","WLD","RENDER",
+    "IMX","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
+    "SAND","MANA","AXS","CHZ","FLOW","GALA","THETA","FTM",
+    "ONE","ROSE","ICX","XMR",
+    "EOS","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
+    "ONT","SC","DGB","IOST","ANKR","CELR",
     "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
-    "USDE","PYUSD","GUSD","LUSD","FRAX","SUSD","EURC","USDS",
+    "USDE","PYUSD","GUSD","LUSD","FRAX","EURC","USDS",
     "USD1","USDX","CUSD","MUSD","HUSD","USDJ","XUSD","ZUSD",
     "DUSD","NUSD","PUSD","CRVUSD","DOLA","PAX","PAXG","BEAN",
     "WBTC","WETH","STETH","CBETH","RETH","WBNB","WEETH","WSTETH",
@@ -1203,6 +1203,32 @@ def eval_buysell_pressure(trades):
             "label": f"ضغط شراء {buy_pct*100:.0f}% (الحد 58%)"}
 
 
+def check_above_vwap(candles_1h):
+    """
+    التأكيد الإلزامي الأخير (v11): السعر لازم يكون فوق VWAP.
+    VWAP = متوسط السعر المرجّح بالفوليم على آخر 24 شمعة.
+    فوق VWAP = المشترين مسيطرين فعلاً = تأكيد قوي للدخول.
+    Returns: (above: bool, dist_pct: float)
+    """
+    if not candles_1h or len(candles_1h) < 10:
+        return True, 0.0   # مش كافي = نتجاوز
+    window = candles_1h[-24:] if len(candles_1h) >= 24 else candles_1h
+    cum_pv = 0.0
+    cum_v = 0.0
+    for c in window:
+        typical = (c["high"] + c["low"] + c["close"]) / 3
+        cum_pv += typical * c["volume"]
+        cum_v += c["volume"]
+    if cum_v <= 0:
+        return True, 0.0
+    vwap = cum_pv / cum_v
+    price = window[-1]["close"]
+    if vwap <= 0:
+        return True, 0.0
+    dist_pct = (price - vwap) / vwap * 100
+    return price > vwap, dist_pct
+
+
 def eval_prepump_detector(trades, ob, candles_15m, current_price, volume_24h):
     """
     🔮 Pre-Pump Detector (v11) — يرصد علامات الصعود قبل ما يحصل.
@@ -1459,7 +1485,17 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     prepump = eval_prepump_detector(trades, ob, kl15m, current_price, volume_24h)
 
     # تأكيد إلزامي للفوليم/الشراء
-    confirmed, confirm_reason = has_strong_confirmation(trades, kl15m)
+    vol_confirmed, vol_reason = has_strong_confirmation(trades, kl15m)
+    # التأكيد الأخير: السعر فوق VWAP
+    above_vwap, vwap_dist = check_above_vwap(kl1h)
+    # التأكيد النهائي = فوليم/شراء قوي + فوق VWAP (الاتنين)
+    confirmed = vol_confirmed and above_vwap
+    if confirmed:
+        confirm_reason = f"{vol_reason} + فوق VWAP +{vwap_dist:.2f}%"
+    elif not above_vwap:
+        confirm_reason = f"❌ تحت VWAP {vwap_dist:.2f}%"
+    else:
+        confirm_reason = f"❌ {vol_reason}"
 
     # v11: أهداف ديناميكية مبنية على ATR + الزخم (Pre-Pump score)
     targets = calc_targets_and_stop(current_price, kl1h, kl15m,
@@ -1746,7 +1782,6 @@ def format_pump_signal_message(result):
         f"💎 *العملة:* `{e(sym)}USDT`",
         f"💰 *السعر:* `{e(fmt_price(price))}`",
         f"⭐ *الأساسية:* {result['core_passed']}/4",
-        f"📊 *النسبة:* {score_pct}% \\({core_pct}% أساسية \\+ {supp_pct}% فرعية" + (f" \\+ {prepump_bonus}% مبكر" if prepump_bonus else "") + f"{e(spread_warn)}{e(ema50_warn)}\\)",
         f"🎯 *القوة:* {e(result['strength_label'])}",
         f"🔮 *Pre\\-Pump:* {prepump['score']}/100",
         f"✅ *تأكيد:* {e(result.get('confirm_reason', '—'))}",
@@ -1784,9 +1819,8 @@ def format_pump_signal_message(result):
     for marker, name, r in items:
         icon = "✅" if r["pass"] else "❌"
         lbl = e(r.get("label", ""))
-        pts = r.get("score", 0)
         prefix = f"{icon} {marker} " if marker else f"{icon} "
-        detail_lines.append(f"{prefix}{name} \\({pts}p\\): {lbl}")
+        detail_lines.append(f"{prefix}{name}: {lbl}")
     detail_lines.append("")
     detail_lines.append("⭐ \\= شرط أساسي")
     # تفاصيل Pre-Pump Detector
