@@ -59,7 +59,7 @@ HISTORY_FAIL_THRESHOLD   = 0.005   # السعر ما تغيرش أكتر من 0.
 
 # ==================== اعدادات الاشارات ====================
 MIN_SCORE          = 45       # الحد الأدنى للإرسال (نسبة مئوية %)
-MIN_VOL_FOR_SIGNAL = 500_000
+MIN_VOL_FOR_SIGNAL = 50_000
 
 # ✅ جديد v3.1: سكان البامب المستمر
 SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
@@ -69,11 +69,12 @@ GATE_MAX_CANDIDATES       = 5000       # فحص كل عملات Gate.io
 GATE_PARALLEL_LIMIT       = 30         # طلبات متوازية
 
 # ── Pre-scan Filter (المرحلة 1) ──
-PRESCAN_MIN_VOL_24H       = 500_000    # فوليم 24h ≥ $500K (نفس MIN_VOL_FOR_SIGNAL)
+PRESCAN_MIN_VOL_24H       = 50_000     # فوليم 24h ≥ $50K
 PRESCAN_MIN_CHANGE_24H    = -8.0       # تغيّر 24h > -8% (مش انهيار)
-PRESCAN_MAX_CHANGE_24H    = 25.0       # تغيّر 24h < +25% (مش فات القطار)
+PRESCAN_MAX_CHANGE_24H    = 12.0       # تغيّر 24h < +12% (مش فات القطار)
 PRESCAN_MIN_ACTIVITY      = 0.3        # range_24h / price ≥ 0.3% (في حركة)
 PRESCAN_LARGE_VOL         = 3_000_000  # فوليم ≥ $3M = تتفحص دايماً بغض النظر عن التغيّر
+PRESCAN_MAX_PULLBACK      = 15.0       # لو القمة أعلى من السعر الحالي بـ 15%+ = بامب وراح
 
 # ════════════════════════════════════════════════════════════════════
 # ✅ v8.0 — PUMP DETECTION (12 شرط قوية — Gate.io)
@@ -270,6 +271,42 @@ async def fetch_cmc(session, limit=500):
         return coins
     except Exception as e:
         logger.error(f"CMC error: {e}"); return []
+
+
+
+
+async def fetch_cmc_quote(session, symbol):
+    """
+    يجيب بيانات عملة واحدة من CMC (الفوليم الإجمالي عبر كل المنصات).
+    Returns: dict {name, volume_24h, price, change_24h, num_pairs} أو None
+    """
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY, "Accept": "application/json"}
+    params  = {"symbol": symbol.upper(), "convert": "USD"}
+    try:
+        async with session.get(url, headers=headers, params=params,
+                               timeout=aiohttp.ClientTimeout(total=15)) as r:
+            if r.status != 200:
+                return None
+            data = await r.json()
+        coin_data = data.get("data", {}).get(symbol.upper())
+        if not coin_data:
+            return None
+        # قد ترجع list لو في أكثر من عملة بنفس الرمز
+        if isinstance(coin_data, list):
+            coin_data = coin_data[0]
+        quote = coin_data.get("quote", {}).get("USD", {})
+        return {
+            "name":        coin_data.get("name", symbol),
+            "symbol":      coin_data.get("symbol", symbol),
+            "volume_24h":  float(quote.get("volume_24h", 0) or 0),
+            "price":       float(quote.get("price", 0) or 0),
+            "change_24h":  float(quote.get("percent_change_24h", 0) or 0),
+            "num_pairs":   coin_data.get("num_market_pairs", 0),
+        }
+    except Exception as e:
+        logger.error(f"CMC quote error ({symbol}): {e}")
+        return None
 
 
 # ==================== ✅ v4.1 — Gate.io: كل العملات ====================
@@ -1393,12 +1430,32 @@ def format_pump_signal_message(result):
     spoiler_block = f"👁 *اضغط لإظهار التفاصيل:*\n||{detail_text}||"
 
     # ───── التذييل ─────
+    # حالة BTC الكاملة (تظهر مع كل توصية)
+    btc_st = result.get("btc_status_full")
+    btc_block = ""
+    if btc_st:
+        emoji_map = {
+            "BULLISH": "🟢", "NEUTRAL": "🟢", "BEARISH_LIGHT": "🟡",
+            "HIGH_VOL": "🟡", "BEARISH_STRONG": "🔴", "CRASH": "🚨", "UNKNOWN": "❓",
+        }
+        name_map = {
+            "BULLISH": "Bullish", "NEUTRAL": "Neutral", "BEARISH_LIGHT": "Bearish خفيف",
+            "HIGH_VOL": "تقلب عالي", "BEARISH_STRONG": "Bearish قوي",
+            "CRASH": "Crash", "UNKNOWN": "غير معروف",
+        }
+        bem = emoji_map.get(btc_st["status"], "❓")
+        bnm = name_map.get(btc_st["status"], "?")
+        ch1 = f"{btc_st['change_1h']:+.2f}%"
+        ch4 = f"{btc_st['change_4h']:+.2f}%"
+        btc_block = (f"\n{bem} *BTC:* {e(bnm)} "
+                     f"\\(1h {e(ch1)} \\| 4h {e(ch4)}\\)")
+
     btc_warn = result.get("btc_warning")
     btc_warn_line = f"\n⚠️ {e(btc_warn)}" if btc_warn else ""
     footer = [
         "",
         "━" * 18,
-        f"⏰ {e(datetime.now().strftime('%H:%M:%S'))} \\| 📡 Gate\\.io{btc_warn_line}",
+        f"⏰ {e(datetime.now().strftime('%H:%M:%S'))} \\| 📡 Gate\\.io{btc_block}{btc_warn_line}",
     ]
 
     header_lines_final = [l for l in header_lines if l is not None]
@@ -1437,6 +1494,14 @@ def prescan_filter(coins):
         if chg <= PRESCAN_MIN_CHANGE_24H or chg >= PRESCAN_MAX_CHANGE_24H:
             skipped += 1
             continue
+
+        # فلتر "البامب وراح": لو القمة أعلى من السعر الحالي بكتير
+        # يعني العملة طلعت ونزلت = فات القطار حتى لو التغيّر 24h صغير
+        if price > 0 and high > price:
+            pullback_pct = (high - price) / price * 100
+            if pullback_pct > PRESCAN_MAX_PULLBACK:
+                skipped += 1
+                continue
 
         # فلتر العملات الميتة (range صغير جداً)
         if price > 0:
@@ -1658,6 +1723,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
     for r in fresh_main:
         try:
             r["btc_warning"] = btc_warn_text
+            r["btc_status_full"] = btc_info if btc_info else None
             msg = format_pump_signal_message(r)
             await bot.send_message(chat_id=chat_target, text=msg,
                                     parse_mode="MarkdownV2",
@@ -1811,6 +1877,57 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/chatid      — معرفة الـ Chat ID"
     )
 
+
+
+
+async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /volume SYMBOL — يعرض الفوليم الإجمالي لعملة عبر كل المنصات"""
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "اكتب رمز العملة بعد الأمر.\nمثال: /volume BTC أو /volume PEPE"
+        )
+        return
+    sym = args[0].upper().replace("USDT", "").replace("_", "").strip()
+    await update.message.reply_text(f"⏳ جاري جلب فوليم {sym}...")
+    try:
+        async with aiohttp.ClientSession() as session:
+            # الفوليم الإجمالي من CMC (كل المنصات)
+            cmc = await fetch_cmc_quote(session, sym)
+            # فوليم Gate.io فقط
+            gate_vol = 0.0
+            gate_tickers = await fetch_gate_tickers(session)
+            for t in (gate_tickers or []):
+                if t.get("currency_pair", "") == f"{sym}_USDT":
+                    gate_vol = float(t.get("quote_volume", 0) or 0)
+                    break
+
+        def fmt_v(v):
+            if v >= 1_000_000_000:
+                return f"${v/1_000_000_000:.2f}B"
+            if v >= 1_000_000:
+                return f"${v/1_000_000:.2f}M"
+            if v >= 1_000:
+                return f"${v/1_000:.1f}K"
+            return f"${v:.0f}"
+
+        lines = [f"📊 فوليم {sym}", "━━━━━━━━━━━━━━━━━━━━"]
+        if cmc:
+            lines += [
+                f"🪙 الاسم:  {cmc['name']}",
+                f"💰 السعر:  ${cmc['price']:.6f}".rstrip("0").rstrip("."),
+                f"📈 تغيّر 24h:  {cmc['change_24h']:+.2f}%",
+                "━━━━━━━━━━━━━━━━━━━━",
+                f"🌐 فوليم كل المنصات:  {fmt_v(cmc['volume_24h'])}",
+                f"   (عبر {cmc['num_pairs']} زوج تداول)",
+            ]
+        else:
+            lines.append("⚠️ العملة غير موجودة في CMC")
+        if gate_vol > 0:
+            lines.append(f"📡 فوليم Gate.io:  {fmt_v(gate_vol)}")
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        await update.message.reply_text(f"❌ خطأ: {e}")
 
 
 async def cmd_haram(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1990,6 +2107,7 @@ def main():
     app.add_handler(CommandHandler("chatid",  cmd_chatid))
     app.add_handler(CommandHandler("btc",     cmd_btc))
     app.add_handler(CommandHandler("haram",   cmd_haram))
+    app.add_handler(CommandHandler("volume",  cmd_volume))
 
     load_seen_coins()
     load_seen_signals()   # ✅ v6.4
