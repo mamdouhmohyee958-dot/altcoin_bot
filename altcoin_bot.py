@@ -1217,8 +1217,8 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "symbol": symbol, "price": current_price, "score": 0, "max_score": 45,
             "strength": None, "strength_emoji": "🚫", "core_passed": 0,
             "strength_label": f"رفض — Wash Trading مشتبه ({wash_ratio*100:.0f}% صفقات مكررة)",
-            "stop_loss": current_price*0.97, "target_1": current_price*1.03,
-            "target_2": current_price*1.06, "target_3": current_price*1.10,
+            "stop_loss": current_price*0.97, "target": current_price*1.08,
+            "breakeven": current_price*1.04,
             "rr_ratio": 1.0, "atr_pct": 3.0, "trail_pct": 2.0,
             "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}},
             "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
@@ -1305,9 +1305,8 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "strength_label": strength_label,
         "core_passed": core_passed,
         "stop_loss":  targets["stop_loss"],
-        "target_1":   targets["target_1"],
-        "target_2":   targets["target_2"],
-        "target_3":   targets.get("target_3", targets["target_2"]),
+        "target":     targets["target"],
+        "breakeven":  targets["breakeven"],
         "rr_ratio":   targets["rr_ratio"],
         "atr_pct":    targets["atr_pct"],
         "trail_pct":  targets.get("trail_pct", 2.0),
@@ -1375,17 +1374,16 @@ def calc_targets_and_stop(current_price, candles_1h, candles_15m=None, momentum_
     - كل ما الزخم أقوى، الأهداف أبعد (نمسك الصعود الكبير)
     - الاستوب أضيق في الزخم القوي (السعر مش المفروض يرجع)
     - مستويات S/R الحقيقية كسقف منطقي
-    Returns: {"stop_loss","target_1","target_2","target_3","rr_ratio","atr_pct","sr_based","trail_pct"}
+    Returns: {"stop_loss","target","breakeven","rr_ratio","atr_pct","sr_based","trail_pct"}
     """
     fallback = {
-        "stop_loss": current_price * 0.97,
-        "target_1":  current_price * 1.03,
-        "target_2":  current_price * 1.06,
-        "target_3":  current_price * 1.10,
-        "rr_ratio":  1.5,
-        "atr_pct":   3.0,
-        "sr_based":  False,
-        "trail_pct": 2.0,
+        "stop_loss":  current_price * 0.97,
+        "target":     current_price * 1.08,
+        "breakeven":  current_price * 1.04,
+        "rr_ratio":   2.0,
+        "atr_pct":    3.0,
+        "sr_based":   False,
+        "trail_pct":  2.0,
     }
     if not candles_1h or len(candles_1h) < 15 or current_price <= 0:
         return fallback
@@ -1440,43 +1438,51 @@ def calc_targets_and_stop(current_price, candles_1h, candles_15m=None, momentum_
     if risk <= 0:
         risk = atr
 
-    # ── 6) الأهداف الديناميكية (3 أهداف) ──
-    # المسافات مبنية على ATR × معامل الزخم
-    t1_dist = atr * 1.5 * target_mult
-    t2_dist = atr * 3.0 * target_mult
-    t3_dist = atr * 5.0 * target_mult
+    # ── 6) الهدف الواحد: ~3.5x ATR معدّل بالزخم ──
+    # base = 3.5x ATR، يزيد مع الزخم حتى ~5x
+    target_dist = atr * (3.5 * target_mult / 1.0)
+    # نطبّق target_mult بشكل معتدل: 3.5x في الزخم الضعيف → ~5x في القوي
+    target_dist = atr * (3.5 + mom * 1.5)
+    target = current_price + target_dist
 
-    target_1 = current_price + t1_dist
-    target_2 = current_price + t2_dist
-    target_3 = current_price + t3_dist
-
-    # ── 7) تعديل بالمقاومات الحقيقية (لا نتجاوزها بسذاجة) ──
+    # ── 7) تعديل بالمقاومة القوية (لا نضع الهدف فوق مقاومة كبيرة) ──
     sr_based = False
+    breakeven = None
     if resistances:
         res_above = [r for r in resistances if r > current_price * 1.005]
         if res_above:
             sr_based = True
-            # الهدف الأول لا يتعدى أقرب مقاومة بشكل مبالغ
-            nearest = res_above[0]
-            if target_1 > nearest * 1.02:
-                target_1 = nearest * 0.998
-            if len(res_above) >= 2 and target_2 > res_above[1] * 1.02:
-                target_2 = res_above[1] * 0.998
+            # نقطة التأمين = أول مقاومة حقيقية
+            breakeven = res_above[0]
+            # الهدف: لو في مقاومة تانية قوية قريبة من هدفنا، نخليها الهدف
+            # غير كده نسيب الهدف المحسوب بس منخليهوش بعيد جداً عن آخر مقاومة
+            far_res = [r for r in res_above if r > target * 0.95]
+            if len(res_above) >= 2:
+                # الهدف عند المقاومة الثانية لو كانت أقرب من هدفنا المحسوب
+                second = res_above[1]
+                if second < target:
+                    target = second * 0.998
+            # تأكيد إن الهدف فوق نقطة التأمين
+            if breakeven and target <= breakeven:
+                target = breakeven * 1.015
 
-    rr_ratio = (target_1 - current_price) / risk if risk > 0 else 1.5
+    # لو مفيش مقاومات، نقطة التأمين = نص الطريق للهدف
+    if breakeven is None:
+        breakeven = current_price + (target - current_price) * 0.5
+
+    rr_ratio = (target - current_price) / risk if risk > 0 else 1.5
 
     # ── 8) نسبة الـ Trailing Stop (للزخم القوي = trail أضيق) ──
     trail_pct = round(max(1.0, atr15_pct * (1.5 - mom * 0.5)), 2)
 
     return {
-        "stop_loss": stop_loss,
-        "target_1":  target_1,
-        "target_2":  target_2,
-        "target_3":  target_3,
-        "rr_ratio":  rr_ratio,
-        "atr_pct":   atr_pct,
-        "sr_based":  sr_based,
-        "trail_pct": trail_pct,
+        "stop_loss":  stop_loss,
+        "target":     target,
+        "breakeven":  breakeven,
+        "rr_ratio":   rr_ratio,
+        "atr_pct":    atr_pct,
+        "sr_based":   sr_based,
+        "trail_pct":  trail_pct,
     }
 
 
@@ -1504,14 +1510,12 @@ def format_pump_signal_message(result):
     sym = result["symbol"]
     price = result["price"]
     sl = result["stop_loss"]
-    t1 = result["target_1"]
-    t2 = result["target_2"]
-    t3 = result.get("target_3", t2)
+    tgt = result["target"]
+    be = result.get("breakeven", price)
     sl_pct = (sl - price) / price * 100
-    t1_pct = (t1 - price) / price * 100
-    t2_pct = (t2 - price) / price * 100
-    t3_pct = (t3 - price) / price * 100
-    rr = result.get("rr_ratio", 1.5)
+    tgt_pct = (tgt - price) / price * 100
+    be_pct = (be - price) / price * 100
+    rr = result.get("rr_ratio", 2.0)
     atr_pct = result.get("atr_pct", 3.0)
     trail_pct = result.get("trail_pct", 2.0)
     prepump = result.get("prepump", {"score": 0, "label": "", "signals": {}})
@@ -1564,11 +1568,11 @@ def format_pump_signal_message(result):
         "",
         "━━━ 📍 *الدخول والخروج* ━━━",
         f"🟢 *الدخول:* `{e(fmt_price(price))}`",
-        f"🎯 *الهدف 1:* `{e(fmt_price(t1))}` \\({e(f'{t1_pct:+.2f}%')}\\)" + (" 📌S/R" if result.get('sr_based') else ""),
-        f"🏆 *الهدف 2:* `{e(fmt_price(t2))}` \\({e(f'{t2_pct:+.2f}%')}\\)",
-        f"🚀 *الهدف 3:* `{e(fmt_price(t3))}` \\({e(f'{t3_pct:+.2f}%')}\\)",
+        f"🔒 *نقطة التأمين:* `{e(fmt_price(be))}` \\({e(f'{be_pct:+.2f}%')}\\)" + (" 📌مقاومة" if result.get('sr_based') else ""),
+        f"      ↳ عند الوصول، حرّك الاستوب للدخول \\(صفر خسارة\\)",
+        f"🎯 *الهدف:* `{e(fmt_price(tgt))}` \\({e(f'{tgt_pct:+.2f}%')}\\)",
         f"🛑 *الاستوب:* `{e(fmt_price(sl))}` \\({e(f'{sl_pct:+.2f}%')}\\)",
-        f"📈 *Trailing:* `{e(f'{trail_pct:.1f}%')}` \\(استوب متحرك\\)",
+        f"📈 *Trailing:* `{e(f'{trail_pct:.1f}%')}` \\(استوب متحرك بعد التأمين\\)",
         f"⚖️ *R:R:* `{e(f'{rr:.2f}')}` \\| *ATR:* `{e(f'{atr_pct:.1f}%')}`",
         "",
     ]
