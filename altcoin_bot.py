@@ -65,8 +65,15 @@ MIN_VOL_FOR_SIGNAL = 500_000
 SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
 SIGNAL_LOOP_ERR_GAP     = 30      # فاصل بعد خطأ
 SIGNAL_COOLDOWN_HOURS     = 6     # كان 24h — قللناه عشان السكان المستمر
-GATE_MAX_CANDIDATES       = 5000       # ✅ فحص كل عملات Gate.io (لا يوجد قص فعلي)
-GATE_PARALLEL_LIMIT       = 25         # طلبات كلاينز متوازية (زدناها لـ 25)
+GATE_MAX_CANDIDATES       = 5000       # فحص كل عملات Gate.io
+GATE_PARALLEL_LIMIT       = 30         # طلبات متوازية
+
+# ── Pre-scan Filter (المرحلة 1) ──
+PRESCAN_MIN_VOL_24H       = 500_000    # فوليم 24h ≥ $500K (نفس MIN_VOL_FOR_SIGNAL)
+PRESCAN_MIN_CHANGE_24H    = -8.0       # تغيّر 24h > -8% (مش انهيار)
+PRESCAN_MAX_CHANGE_24H    = 25.0       # تغيّر 24h < +25% (مش فات القطار)
+PRESCAN_MIN_ACTIVITY      = 0.3        # range_24h / price ≥ 0.3% (في حركة)
+PRESCAN_LARGE_VOL         = 3_000_000  # فوليم ≥ $3M = تتفحص دايماً بغض النظر عن التغيّر
 
 # ════════════════════════════════════════════════════════════════════
 # ✅ v8.0 — PUMP DETECTION (12 شرط قوية — Gate.io)
@@ -1401,6 +1408,51 @@ def format_pump_signal_message(result):
 # ════════════════════════════════════════════════════════════════════
 # ✅ v8.0 — فحص إشارات البامب (الـ 12 شرط)
 # ════════════════════════════════════════════════════════════════════
+
+def prescan_filter(coins):
+    """
+    المرحلة 1 — فلتر مسبق سريع بدون طلبات إضافية.
+    بيستخدم بيانات الـ ticker فقط (موجودة مجاناً).
+    الهدف: تقليل العملات من 2500 لـ ~200 نشطة فعلاً.
+
+    معايير الإبقاء:
+    - فوليم ≥ $3M → تتفحص دايماً (عملة كبيرة)
+    - تغيّر 24h بين -8% و+25% (مش انهيار ومش فات القطار)
+    - range_24h / price ≥ 0.3% (في حركة فعلية)
+    """
+    passed, skipped = [], 0
+    for d in coins:
+        vol   = d.get("volume_24h", 0)
+        chg   = d.get("price_change_24h", 0)
+        price = d.get("price", 0)
+        high  = d.get("high_24h", price)
+        low   = d.get("low_24h", price)
+
+        # دايماً نفحص العملات الكبيرة
+        if vol >= PRESCAN_LARGE_VOL:
+            passed.append(d)
+            continue
+
+        # فلتر الانهيار والقطار الفات
+        if chg <= PRESCAN_MIN_CHANGE_24H or chg >= PRESCAN_MAX_CHANGE_24H:
+            skipped += 1
+            continue
+
+        # فلتر العملات الميتة (range صغير جداً)
+        if price > 0:
+            range_pct = (high - low) / price * 100
+            if range_pct < PRESCAN_MIN_ACTIVITY:
+                skipped += 1
+                continue
+
+        passed.append(d)
+
+    logger.info(
+        f"🔍 Pre-scan: {len(coins)} عملة → {len(passed)} نشطة "
+        f"(تم تخطي {skipped} ميتة/انهيار/فات)"
+    )
+    return passed
+
 async def check_signals(bot: Bot, target_chat: int = None):
     global previous_signals, btc_crashed
     logger.info("🚀 فحص إشارات البامب (Pump Detection v9.0)...")
@@ -1455,8 +1507,8 @@ async def check_signals(bot: Bot, target_chat: int = None):
             logger.error("❌ فشل جلب tickers من Gate.io")
             return
 
-        # 2️⃣ فلتر العملات: فوليم 24h ≥ MIN
-        candidates = []
+        # 2️⃣ فلتر العملات — المرحلة 1: تحويل وفلتر أساسي
+        raw_coins = []
         for t in gate_tickers:
             d = parse_gate_ticker(t)
             if not d: continue
@@ -1464,9 +1516,12 @@ async def check_signals(bot: Bot, target_chat: int = None):
             if d["symbol"] in HARAM_SYMBOLS:
                 logger.debug(f"🚫 {d['symbol']} محرمة — تم تخطيها")
                 continue
-            if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
+            if d["volume_24h"] < PRESCAN_MIN_VOL_24H: continue
             if d["price"] <= 0: continue
-            candidates.append(d)
+            raw_coins.append(d)
+
+        # المرحلة 2: Pre-scan — يشيل العملات الميتة والانهيارات والفات قطارها
+        candidates = prescan_filter(raw_coins)
         candidates = candidates[:GATE_MAX_CANDIDATES]
 
         # إثراء من CMC للحصول على الاسم الكامل والـ tags وإجمالي فوليم كل المنصات
@@ -1488,7 +1543,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
             for d in candidates:
                 d["volume_cmc_total"] = 0
 
-        logger.info(f"📋 سيتم فحص {len(candidates)} عملة (فوليم >= ${MIN_VOL_FOR_SIGNAL/1_000:.0f}K)")
+        logger.info(f"📋 سيتم التحليل الكامل لـ {len(candidates)} عملة من أصل {len(raw_coins)} (بعد Pre-scan)")
 
         # 3️⃣ تقييم الـ 12 شرط لكل عملة بالتوازي
         sem = asyncio.Semaphore(GATE_PARALLEL_LIMIT)
@@ -1836,7 +1891,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ Pump Detection Bot — v10.0 (Pro)\n\n"
         f"🌐 المصدر: كل Gate.io USDT\n"
-        f"   فلتر: فوليم >= ${MIN_VOL_FOR_SIGNAL/1_000:.0f}K\n"
+        f"   فلتر 1: فوليم >= ${PRESCAN_MIN_VOL_24H/1_000:.0f}K\n"
+        f"   فلتر 2: تغيّر بين {PRESCAN_MIN_CHANGE_24H}% و+{PRESCAN_MAX_CHANGE_24H}%\n"
+        f"   فلتر 3: عملات $3M+ تتفحص دايماً\n"
         f"   📡 فلتر BTC: {'نشط' if BTC_FILTER_ENABLED else 'متوقف'}\n"
         f"   توازي: {GATE_PARALLEL_LIMIT} طلب\n\n"
         f"🚀 سكان البامب: {scanner_status}\n"
@@ -1893,7 +1950,8 @@ async def _post_init(app: Application):
             text=(
                 "🟢 *Pump Detection Bot v10.0 Pro — Gate.io*\n"
                 f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
-                f"🌐 يفحص كل عملات Gate.io USDT (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)\n"
+                f"🌐 يفحص كل عملات Gate.io USDT (2500+ عملة)\n"
+        f"⚡ Pre-scan سريع → تحليل كامل للنشطة فقط\n"
                 f"⚡ 12 شرط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
                 f"🚀 STRONG ≥ {PUMP_SCORE_STRONG} | ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}"
             ),
@@ -1948,8 +2006,9 @@ def main():
 
     print("="*60)
     print("🚀 Pump Detection Bot v10.0 — Gate.io Edition (Pro Accuracy)")
-    print(f"🌐 المصدر: كل Gate.io USDT (سقف {GATE_MAX_CANDIDATES} عملة)")
-    print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
+    print(f"🌐 المصدر: كل Gate.io USDT (2500+ عملة)")
+    print(f"   المرحلة 1 — Pre-scan: فوليم >= ${PRESCAN_MIN_VOL_24H/1_000:.0f}K، تغيّر {PRESCAN_MIN_CHANGE_24H}% ~ +{PRESCAN_MAX_CHANGE_24H}%")
+    print(f"   المرحلة 2 — تحليل كامل (7 طلبات/عملة) على النشطة فقط")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
     print(f"")
     print(f"🚨 نظام البامب (12 شرط):")
