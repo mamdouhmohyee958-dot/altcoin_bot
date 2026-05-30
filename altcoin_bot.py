@@ -1,11 +1,13 @@
 """
-🚀 Pump Detection Bot v8.0 — Gate.io Edition
-نظام كشف البامب بـ 12 شرط (بنفس المدخلات الأصلية):
+🚀 Pump Detection Bot v10.0 — Gate.io Edition (Pro Accuracy)
+نظام كشف البامب المحسّن بـ 12 شرط + 6 تحسينات دقة:
   ⭐ الأساسية (4): Funding Rate, CVD Divergence, Taker Buy Ratio, Order Book Imbalance
-  📊 التكميلية (6): Volume Acceleration, Bid Wall, Whale Accumulation,
-                    EMA21 Crossover, Multi-TF Buy Pressure, Short Liquidation
-السكان المستمر يفحص كل عملات Gate.io USDT (فوليم ≥ $1M) ويرسل الإشارات للأدمن.
-الأوامر: /start, /status, /chatid
+  📊 التكميلية (8): Volume Acceleration, Bid Wall, Whale Accumulation,
+                    EMA21 Crossover, Multi-TF Buy Pressure, Short Liquidation,
+                    Candle Momentum, Early Volume Surge
+  🔒 فلاتر الدقة: Anti-Wash Trading, Confluence Check, EMA50/4h Trend,
+                  Spread Filter, Score History Penalty, S/R Targets
+الأوامر: /start, /status, /btc, /chatid
 """
 
 import asyncio
@@ -33,6 +35,27 @@ BTC_BEARISH_LIGHT_MAX = -1.0
 BTC_HIGH_ATR_PCT      = 2.0    # ATR >= 2% → تحذير
 BTC_CRASH_1H          = -2.0   # 1h < -2% → إيقاف فوري
 BTC_RECOVERY_1H       = -0.5   # 1h >= -0.5% → استئناف تلقائي
+
+# ==================== فلاتر الدقة الجديدة v10 ====================
+# --- Anti Wash Trading ---
+WASH_REPEAT_THRESHOLD    = 0.001   # صفقتان بنفس الحجم ±0.1% = wash
+WASH_MIN_REPEAT_COUNT    = 5       # لو 5+ صفقات متكررة = مشبوه
+WASH_MAX_RATIO           = 0.30    # لو wash > 30% من الصفقات = رفض
+
+# --- Spread Filter ---
+SPREAD_MAX_PCT           = 0.005   # spread > 0.5% = سيولة ضعيفة → تجاهل
+
+# --- Confluence Penalty ---
+# لو CVD قوي لكن OB ضعيف = نقص في الثقة
+CONFLUENCE_PENALTY_PCT   = 5       # خصم 5% من النسبة النهائية
+
+# --- EMA50 Trend Filter (4h) ---
+EMA50_CANDLES_4H         = 60      # آخر 60 شمعة 4h لحساب EMA50
+
+# --- Score History Penalty ---
+# لو العملة بعتت إشارة قبل كده وما تحركتش = خصم
+HISTORY_PENALTY_PCT      = 10      # خصم 10% لو سبق إرسالها وفشلت
+HISTORY_FAIL_THRESHOLD   = 0.005   # السعر ما تغيرش أكتر من 0.5% = فشل
 
 # ==================== اعدادات الاشارات ====================
 MIN_SCORE          = 45       # الحد الأدنى للإرسال (نسبة مئوية %)
@@ -77,15 +100,35 @@ PUMP_RESEND_ON_UPGRADE   = True # ✅ v6.4 — إعادة الإرسال لو ت
 
 
 # ───── عتبات الشروط ─────
-PUMP_FUNDING_RATE_LOW    = -0.0005   # -0.05% = 2 نقاط
-PUMP_FUNDING_RATE_VLOW   = -0.0010   # -0.10% = 3 نقاط
-PUMP_CVD_CHANGE_PCT      = 15.0      # CVD ≥ 15% = 3 نقاط
-PUMP_CVD_STRONG_PCT      = 50.0      # CVD ≥ 50% = 4 نقاط (ممتاز)
+# ── Funding Rate (4 مستويات) ──
+PUMP_FUNDING_RATE_L1     = -0.0003   # -0.03% → 5%
+PUMP_FUNDING_RATE_L2     = -0.0005   # -0.05% → 10%
+PUMP_FUNDING_RATE_L3     = -0.0010   # -0.10% → 15%
+# backward compat
+PUMP_FUNDING_RATE_LOW    = -0.0005
+PUMP_FUNDING_RATE_VLOW   = -0.0010
+
+# ── CVD Divergence (4 مستويات) ──
+PUMP_CVD_L1              = 10.0      # CVD ≥ 10%  → 5%
+PUMP_CVD_L2              = 25.0      # CVD ≥ 25%  → 10%
+PUMP_CVD_L3              = 50.0      # CVD ≥ 50%  → 15%
+PUMP_CVD_CHANGE_PCT      = 15.0      # backward compat
+PUMP_CVD_STRONG_PCT      = 50.0
 PUMP_PRICE_CHANGE_PCT    = 1.5       # السعر متحرك < 1.5%
-PUMP_TAKER_RATIO_MIN     = 0.60      # ≥ 60% = 2 نقاط
-PUMP_TAKER_RATIO_STRONG  = 0.70      # ≥ 70% = 3 نقاط
-PUMP_OB_IMBALANCE_MIN    = 0.70      # ≥ 70% = 2 نقاط
-PUMP_OB_IMBALANCE_STRONG = 0.85      # ≥ 85% = 3 نقاط
+
+# ── Taker Buy Ratio (4 مستويات) ──
+PUMP_TAKER_L1            = 0.58      # ≥ 58% → 5%
+PUMP_TAKER_L2            = 0.65      # ≥ 65% → 10%
+PUMP_TAKER_L3            = 0.72      # ≥ 72% → 15%
+PUMP_TAKER_RATIO_MIN     = 0.60      # backward compat
+PUMP_TAKER_RATIO_STRONG  = 0.70
+
+# ── Order Book Imbalance (4 مستويات) ──
+PUMP_OB_L1               = 0.62      # ≥ 62% → 5%
+PUMP_OB_L2               = 0.72      # ≥ 72% → 10%
+PUMP_OB_L3               = 0.85      # ≥ 85% → 15%
+PUMP_OB_IMBALANCE_MIN    = 0.70      # backward compat
+PUMP_OB_IMBALANCE_STRONG = 0.85
 PUMP_OB_RANGE_PCT        = 0.02      # نطاق ±2%
 
 # ───── عتبات التكميلية ─────
@@ -158,6 +201,22 @@ job_locks = {
 }
 last_job_run = {
     "check_signals": None,
+}
+
+# ==================== العملات المحرمة (يدوي) ====================
+# أضف هنا أي عملة تعتبرها محرمة أو مشبوهة
+HARAM_SYMBOLS = {
+    # ميم كوينز / قمار
+    "FARTCOIN",
+    # مشاريع مشبوهة
+    "CTR",     # CTRUSDT
+    "UP",      # UPUSDT
+    "ESPORTS", # ESPORTSUSDT
+    "SLX",     # SLXUSDT
+    "BAS",     # BASUSDT
+    "BEAT",    # BEATUSDT
+    "GENIUS",  # GENIUSUSDT
+    # أضف هنا ↓
 }
 
 # ==================== قوائم الاستبعاد ====================
@@ -419,28 +478,96 @@ async def fetch_gate_recent_trades(session, symbol, limit=1000):
     """
     شروط 2 و 4: آخر الصفقات لحساب CVD و Taker Buy Ratio
     Gate.io: 'side' = 'buy' معناها taker buy، 'sell' = taker sell
+    v10: نجيب أكبر عدد ممكن (1000 = الحد الأقصى لـ Gate.io)
     """
     url = "https://api.gateio.ws/api/v4/spot/trades"
-    params = {"currency_pair": f"{symbol}_USDT", "limit": limit}
+    params = {"currency_pair": f"{symbol}_USDT", "limit": min(limit, 1000)}
     try:
         async with session.get(url, params=params,
-                               timeout=aiohttp.ClientTimeout(total=8)) as r:
+                               timeout=aiohttp.ClientTimeout(total=10)) as r:
             if r.status != 200: return []
             data = await r.json()
         out = []
         for t in data:
             try:
+                qty   = float(t.get("amount", 0))
+                price = float(t.get("price", 0))
+                if qty <= 0 or price <= 0:
+                    continue
                 out.append({
                     "ts":     int(float(t.get("create_time_ms", 0))),
-                    "side":   t.get("side", ""),    # 'buy' = taker buy
-                    "qty":    float(t.get("amount", 0)),
-                    "price":  float(t.get("price", 0)),
+                    "side":   t.get("side", ""),
+                    "qty":    qty,
+                    "price":  price,
                 })
             except (ValueError, TypeError):
                 continue
         return out
     except Exception:
         return []
+
+
+def detect_wash_trading(trades):
+    """
+    v10 — كشف Wash Trading:
+    لو نسبة الصفقات المتكررة بنفس الحجم تقريباً > 30% = مشبوه.
+    Returns: (is_wash: bool, wash_ratio: float)
+    """
+    if not trades or len(trades) < 20:
+        return False, 0.0
+    qtys = [round(t["qty"], 4) for t in trades]
+    from collections import Counter
+    counts = Counter(qtys)
+    repeat_trades = sum(c for c in counts.values() if c >= WASH_MIN_REPEAT_COUNT)
+    wash_ratio = repeat_trades / len(trades)
+    return wash_ratio > WASH_MAX_RATIO, wash_ratio
+
+
+def check_spread(ob, current_price):
+    """
+    v10 — فلتر السيولة عبر الـ Spread:
+    لو الفرق بين أفضل bid وأفضل ask > 0.5% = سيولة ضعيفة.
+    Returns: (spread_ok: bool, spread_pct: float)
+    """
+    if not ob or not ob.get("bids") or not ob.get("asks") or current_price <= 0:
+        return True, 0.0   # مش متاح = نتجاوز الفلتر
+    best_bid = ob["bids"][0][0] if ob["bids"] else 0
+    best_ask = ob["asks"][0][0] if ob["asks"] else 0
+    if best_bid <= 0 or best_ask <= 0:
+        return True, 0.0
+    spread_pct = (best_ask - best_bid) / current_price
+    return spread_pct <= SPREAD_MAX_PCT, spread_pct
+
+
+def check_confluence(r2, r4):
+    """
+    v10 — Confluence Check:
+    CVD قوي (pass) لكن OB Imbalance ضعيف (fail) = خصم ثقة.
+    Returns: penalty_pct (0 أو CONFLUENCE_PENALTY_PCT)
+    """
+    cvd_strong = r2.get("pass") and r2.get("value", 0) > 30
+    ob_weak    = not r4.get("pass")
+    if cvd_strong and ob_weak:
+        return CONFLUENCE_PENALTY_PCT
+    return 0
+
+
+async def fetch_ema50_4h(session, symbol):
+    """
+    v10 — EMA50 على 4h للتأكد من الاتجاه الكبير.
+    السعر فوق EMA50/4h = اتجاه صعودي كبير = إشارة أقوى.
+    Returns: (above_ema50: bool, ema50_val: float)
+    """
+    candles = await fetch_klines(session, symbol, interval="4h", limit=EMA50_CANDLES_4H)
+    if not candles or len(candles) < 52:
+        return True, 0.0   # مش كافي = نتجاوز الفلتر
+    closes = [c["close"] for c in candles]
+    k = 2 / (50 + 1)
+    ema = sum(closes[:50]) / 50
+    for v in closes[50:]:
+        ema = v * k + ema * (1 - k)
+    current = closes[-1]
+    return current > ema, ema
 
 
 async def fetch_gate_orderbook(session, symbol, limit=20):
@@ -471,17 +598,23 @@ def eval_funding_rate(funding_rate):
     -0.05% → 3 نقاط، -0.10% → 6 نقاط
     """
     if funding_rate is None:
-        return {"pass": False, "score": 0, "value": None, "label": "غير متاح (spot)"}
-    pts = 0
-    if funding_rate < PUMP_FUNDING_RATE_VLOW:
-        pts = PUMP_W_FUNDING_RATE  # 6 (15%)
-    elif funding_rate < PUMP_FUNDING_RATE_LOW:
-        pts = 3
+        return {"pass": False, "score": 0, "value": None, "tier": 0, "label": "غير متاح (spot)"}
+    # 4 مستويات: 0% / 5% / 10% / 15%
+    if funding_rate < PUMP_FUNDING_RATE_L3:
+        tier, pts = 3, PUMP_W_FUNDING_RATE   # 15%
+    elif funding_rate < PUMP_FUNDING_RATE_L2:
+        tier, pts = 2, PUMP_W_FUNDING_RATE * 2 // 3  # 10%
+    elif funding_rate < PUMP_FUNDING_RATE_L1:
+        tier, pts = 1, PUMP_W_FUNDING_RATE // 3       # 5%
+    else:
+        tier, pts = 0, 0
+    tier_label = ["—", "🟡 خفيف", "🟠 متوسط", "🔴 قوي"][tier]
     return {
         "pass":  pts > 0,
         "score": pts,
+        "tier":  tier,
         "value": funding_rate,
-        "label": f"{funding_rate*100:+.3f}%",
+        "label": f"{funding_rate*100:+.3f}% {tier_label}",
     }
 
 
@@ -514,25 +647,24 @@ def eval_cvd_divergence(trades, klines_recent):
     else:
         price_change_pct = 0
     # ✅ v6.0 — tiered: divergence أقوى = نقاط أكثر
-    price_ok      = abs(price_change_pct) < PUMP_PRICE_CHANGE_PCT
-    is_strong     = cvd_change_pct > PUMP_CVD_STRONG_PCT and price_ok
-    is_divergence = cvd_change_pct > PUMP_CVD_CHANGE_PCT and price_ok
+    price_ok = abs(price_change_pct) < PUMP_PRICE_CHANGE_PCT
 
-    if is_strong:
-        pts = PUMP_W_CVD_DIVERGENCE  # 6 (15%)
-        passed = True
-    elif is_divergence:
-        pts = 3
-        passed = True
+    # 4 مستويات
+    if price_ok and cvd_change_pct >= PUMP_CVD_L3:
+        tier, pts = 3, PUMP_W_CVD_DIVERGENCE        # 15%
+    elif price_ok and cvd_change_pct >= PUMP_CVD_L2:
+        tier, pts = 2, PUMP_W_CVD_DIVERGENCE * 2 // 3  # 10%
+    elif price_ok and cvd_change_pct >= PUMP_CVD_L1:
+        tier, pts = 1, PUMP_W_CVD_DIVERGENCE // 3       # 5%
     else:
-        pts = 0
-        passed = False
-
+        tier, pts = 0, 0
+    tier_label = ["—", "🟡 خفيف", "🟠 متوسط", "🔴 قوي"][tier]
     return {
-        "pass":  passed,
+        "pass":  pts > 0,
         "score": pts,
+        "tier":  tier,
         "value": cvd_change_pct,
-        "label": f"CVD {cvd_change_pct:+.1f}% / السعر {price_change_pct:+.2f}%",
+        "label": f"CVD {cvd_change_pct:+.1f}% {tier_label} / سعر {price_change_pct:+.2f}%",
     }
 
 
@@ -559,25 +691,24 @@ def eval_taker_buy_ratio(trades):
     avg_ratio = sum(ratios) / len(ratios) if ratios else 0
     # ✅ v6.0 — منطق tiered ومُصحَّح
     # نشترط: المتوسط ≥ العتبة + 2 على الأقل من الـ 3 شرائح ≥ العتبة
-    above_count = sum(1 for r in ratios if r >= PUMP_TAKER_RATIO_MIN)
-    strong_avg  = avg_ratio >= PUMP_TAKER_RATIO_STRONG and above_count >= 2
-    pass_avg    = avg_ratio >= PUMP_TAKER_RATIO_MIN and above_count >= 2
+    above_count = sum(1 for r in ratios if r >= PUMP_TAKER_L1)
 
-    if strong_avg:
-        pts = PUMP_W_TAKER_BUY_RATIO  # 6 (15%)
-        passed = True
-    elif pass_avg:
-        pts = 3
-        passed = True
+    # 4 مستويات
+    if avg_ratio >= PUMP_TAKER_L3 and above_count >= 2:
+        tier, pts = 3, PUMP_W_TAKER_BUY_RATIO           # 15%
+    elif avg_ratio >= PUMP_TAKER_L2 and above_count >= 2:
+        tier, pts = 2, PUMP_W_TAKER_BUY_RATIO * 2 // 3  # 10%
+    elif avg_ratio >= PUMP_TAKER_L1 and above_count >= 1:
+        tier, pts = 1, PUMP_W_TAKER_BUY_RATIO // 3       # 5%
     else:
-        pts = 0
-        passed = False
-
+        tier, pts = 0, 0
+    tier_label = ["—", "🟡 خفيف", "🟠 متوسط", "🔴 قوي"][tier]
     return {
-        "pass":  passed,
+        "pass":  pts > 0,
         "score": pts,
+        "tier":  tier,
         "value": avg_ratio,
-        "label": f"{avg_ratio*100:.1f}% (متوسط 3 شرائح، {above_count}/3 ≥ {PUMP_TAKER_RATIO_MIN*100:.0f}%)",
+        "label": f"{avg_ratio*100:.1f}% {tier_label} ({above_count}/3 شرائح)",
     }
 
 
@@ -892,42 +1023,70 @@ def eval_early_volume_surge(candles_15m):
 
 async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     """
-    يقيم الـ 12 شرط على عملة واحدة
+    v10 — يقيم الـ 12 شرط + 5 فلاتر دقة على عملة واحدة
     """
-    # جلب البيانات بالتوازي
-    funding, trades, ob, kl1h, kl15m, kl4h, oi_hist = await asyncio.gather(
+    # جلب البيانات بالتوازي (أضفنا EMA50/4h)
+    funding, trades, ob, kl1h, kl15m, kl4h, oi_hist, above_ema50 = await asyncio.gather(
         fetch_gate_funding_rate(session, symbol),
         fetch_gate_recent_trades(session, symbol, limit=1000),
-        fetch_gate_orderbook(session, symbol, limit=30),
+        fetch_gate_orderbook(session, symbol, limit=50),
         fetch_klines(session, symbol, interval="1h", limit=72),
-        fetch_klines(session, symbol, interval="15m", limit=12),  # ✅ السرعة الأصلية
-        fetch_klines(session, symbol, interval="4h", limit=12),
+        fetch_klines(session, symbol, interval="15m", limit=12),
+        fetch_klines(session, symbol, interval="4h", limit=60),
         fetch_gate_open_interest(session, symbol),
+        fetch_ema50_4h(session, symbol),
         return_exceptions=True
     )
-    if isinstance(funding, Exception): funding = None
-    if isinstance(trades, Exception):  trades  = []
-    if isinstance(ob, Exception):      ob      = None
-    if isinstance(kl1h, Exception):    kl1h    = []
-    if isinstance(kl15m, Exception):   kl15m   = []
-    if isinstance(kl4h, Exception):    kl4h    = []
-    if isinstance(oi_hist, Exception): oi_hist = []
+    if isinstance(funding, Exception):    funding    = None
+    if isinstance(trades, Exception):     trades     = []
+    if isinstance(ob, Exception):         ob         = None
+    if isinstance(kl1h, Exception):       kl1h       = []
+    if isinstance(kl15m, Exception):      kl15m      = []
+    if isinstance(kl4h, Exception):       kl4h       = []
+    if isinstance(oi_hist, Exception):    oi_hist    = []
+    if isinstance(above_ema50, Exception): above_ema50 = (True, 0.0)
+
+    ema50_above, ema50_val = above_ema50 if isinstance(above_ema50, tuple) else (True, 0.0)
+
+    # ── فلتر Wash Trading ──
+    is_wash, wash_ratio = detect_wash_trading(trades)
+    if is_wash:
+        return {
+            "symbol": symbol, "price": current_price, "score": 0, "max_score": 45,
+            "strength": None, "strength_emoji": "🚫", "core_passed": 0,
+            "strength_label": f"رفض — Wash Trading مشتبه ({wash_ratio*100:.0f}% صفقات مكررة)",
+            "stop_loss": current_price*0.97, "target_1": current_price*1.03,
+            "target_2": current_price*1.06, "rr_ratio": 1.0, "atr_pct": 3.0,
+            "sr_based": False,
+            "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
+                ["funding_rate","cvd_divergence","taker_buy_ratio","ob_imbalance",
+                 "vol_accel","bid_wall","whale_accum","ema21_cross","mtf_buy",
+                 "short_liq","first_3min","early_surge"]},
+            "filters": {"wash": True, "spread_ok": True, "ema50_above": True,
+                        "confluence_penalty": 0, "history_penalty": 0},
+        }
+
+    # ── فلتر Spread ──
+    spread_ok, spread_pct = check_spread(ob, current_price)
 
     mtf = {"15m": kl15m, "1h": kl1h, "4h": kl4h}
 
-    # تقييم الشروط
-    r1  = eval_funding_rate(funding)                          # 1) Funding (3 pts) ⭐
-    r2  = eval_cvd_divergence(trades, kl1h)                   # 2) CVD (4 pts) ⭐
-    r3  = eval_taker_buy_ratio(trades)                        # 3) Taker (3 pts) ⭐
-    r4  = eval_orderbook_imbalance(ob, current_price)         # 4) OB Imbalance (3 pts) ⭐
-    r5  = eval_volume_acceleration(kl1h)                      # 5) Vol Accel (3 pts)
-    r6  = eval_bid_wall(ob, current_price)                    # 6) Bid Wall (3 pts)
-    r7  = eval_whale_accumulation(trades, volume_24h)         # 7) Whale (3 pts)
-    r8  = eval_ema21_crossover(kl1h)                          # 8) EMA21 (3 pts)
-    r9  = eval_multi_tf_buy_pressure(mtf)                     # 9) Multi-TF (3 pts)
-    r10 = eval_short_liquidation(oi_hist, funding, kl1h)      # 10) Short Liq (4 pts)
-    r11 = eval_candle_momentum(kl15m)                          # 11) Candle Momentum (1 pt) ✅ جديد
-    r12 = eval_early_volume_surge(kl15m)                      # 12) Early Surge (1 pt) ✅ جديد
+    # تقييم الشروط الـ 12
+    r1  = eval_funding_rate(funding)
+    r2  = eval_cvd_divergence(trades, kl1h)
+    r3  = eval_taker_buy_ratio(trades)
+    r4  = eval_orderbook_imbalance(ob, current_price)
+    r5  = eval_volume_acceleration(kl1h)
+    r6  = eval_bid_wall(ob, current_price)
+    r7  = eval_whale_accumulation(trades, volume_24h)
+    r8  = eval_ema21_crossover(kl1h)
+    r9  = eval_multi_tf_buy_pressure(mtf)
+    r10 = eval_short_liquidation(oi_hist, funding, kl1h)
+    r11 = eval_candle_momentum(kl15m)
+    r12 = eval_early_volume_surge(kl15m)
+
+    # ── Confluence Penalty ──
+    confluence_penalty = check_confluence(r2, r4)
 
     total = (r1["score"] + r2["score"] + r3["score"] + r4["score"] + r5["score"]
              + r6["score"] + r7["score"] + r8["score"] + r9["score"] + r10["score"]
@@ -966,9 +1125,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         strength_emoji = "\u274c"
         strength_label = "تجاهل"
 
-    # ═══════════════════════════════════════════════════════════════
-    # ✅ v8.0 — هدف واستوب ديناميكيين مبنيين على ATR + Liquidity Sweep
-    # ═══════════════════════════════════════════════════════════════
+    # v10: أهداف مبنية على S/R حقيقية
     targets = calc_targets_and_stop(current_price, kl1h, None)
 
     return {
@@ -985,6 +1142,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "target_2":   targets["target_2"],
         "rr_ratio":   targets["rr_ratio"],
         "atr_pct":    targets["atr_pct"],
+        "sr_based":   targets.get("sr_based", False),
         "conditions": {
             "funding_rate":     r1,
             "cvd_divergence":   r2,
@@ -999,29 +1157,66 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "first_3min":       r11,
             "early_surge":      r12,
         },
+        "filters": {
+            "wash":               False,
+            "spread_ok":          spread_ok,
+            "spread_pct":         spread_pct,
+            "ema50_above":        ema50_above,
+            "ema50_val":          ema50_val,
+            "confluence_penalty": confluence_penalty,
+        },
     }
 
 
-def calc_targets_and_stop(current_price, candles_1h, liq_sweep_result):
+def find_sr_levels(candles, current_price, lookback=48):
     """
-    حساب الهدف والاستوب الدقيقين بناءً على:
-    - ATR (Average True Range) للـ 14 شمعة 1h = تقلب حقيقي
-    - أعلى/أدنى نقاط محلية = دعم/مقاومة فعلية
-    - cluster القمم من Liquidity Sweep = هدف منطقي للحصاد
-    Returns: {"stop_loss", "target_1", "target_2", "rr_ratio", "atr_pct"}
+    v10 — إيجاد مستويات الدعم والمقاومة الحقيقية من الشارت.
+    Pivot High = مقاومة، Pivot Low = دعم.
+    نرجع: (supports: list, resistances: list) مرتبة تصاعدياً.
     """
-    # حالة افتراضية لو الكلاينز غير كافية
+    if not candles or len(candles) < 10:
+        return [], []
+    candles = candles[-lookback:]
+    supports, resistances = [], []
+    n = len(candles)
+    for i in range(2, n - 2):
+        h = candles[i]["high"]
+        l = candles[i]["low"]
+        # Pivot High
+        if (h > candles[i-1]["high"] and h > candles[i-2]["high"] and
+                h > candles[i+1]["high"] and h > candles[i+2]["high"]):
+            if h > current_price:
+                resistances.append(h)
+        # Pivot Low
+        if (l < candles[i-1]["low"] and l < candles[i-2]["low"] and
+                l < candles[i+1]["low"] and l < candles[i+2]["low"]):
+            if l < current_price:
+                supports.append(l)
+    supports.sort()
+    resistances.sort()
+    return supports, resistances
+
+
+def calc_targets_and_stop(current_price, candles_1h, liq_sweep_result=None):
+    """
+    v10 — حساب الهدف والاستوب بناءً على:
+    - ATR حقيقي (14 شمعة 1h)
+    - مستويات دعم/مقاومة فعلية من pivot points
+    - R:R لا يقل عن 1.5
+    Returns: {"stop_loss", "target_1", "target_2", "rr_ratio", "atr_pct", "sr_based"}
+    """
     fallback = {
         "stop_loss": current_price * 0.97,
         "target_1":  current_price * 1.03,
         "target_2":  current_price * 1.06,
         "rr_ratio":  1.0,
         "atr_pct":   3.0,
+        "sr_based":  False,
     }
     if not candles_1h or len(candles_1h) < 15 or current_price <= 0:
         return fallback
 
-    # ───── 1) حساب ATR على آخر 14 شمعة ─────
+    # ── 1) ATR على آخر 14 شمعة ──
     last = candles_1h[-15:]
     trs = []
     for i in range(1, len(last)):
@@ -1029,45 +1224,46 @@ def calc_targets_and_stop(current_price, candles_1h, liq_sweep_result):
         tr = max(h - l, abs(h - pc), abs(l - pc))
         trs.append(tr)
     atr = sum(trs) / len(trs) if trs else current_price * 0.01
-    atr_pct = (atr / current_price * 100) if current_price > 0 else 3.0
-    # حد أدنى للـ ATR (1%) وأقصى (8%) عشان مكنش متطرف
-    atr_pct = max(1.0, min(atr_pct, 8.0))
+    atr_pct = max(1.0, min((atr / current_price * 100), 8.0))
     atr = current_price * atr_pct / 100
 
-    # ───── 2) الاستوب: أدنى نقطة في آخر 10 شموع - نصف ATR (سرعة هروب) ─────
-    recent_low = min(c["low"] for c in candles_1h[-10:])
-    stop_by_structure = recent_low - (atr * 0.5)
-    # حد أقصى: -5% من السعر الحالي (مش هنخسر أكتر من كده)
-    stop_by_pct = current_price * 0.95
-    stop_loss = max(stop_by_structure, stop_by_pct)
-    # حد أدنى: -1.5% (مش قريب أوي عشان الـ noise)
-    stop_loss = min(stop_loss, current_price * 0.985)
+    # ── 2) إيجاد مستويات S/R ──
+    supports, resistances = find_sr_levels(candles_1h, current_price)
 
-    # ───── 3) الهدف 1: 1.5x المسافة للاستوب (R:R = 1.5) ─────
+    # ── 3) الاستوب: أقرب دعم تحت السعر - ربع ATR ──
+    if supports:
+        nearest_support = supports[-1]   # أقرب دعم تحت السعر
+        stop_by_sr = nearest_support - (atr * 0.25)
+    else:
+        nearest_support = min(c["low"] for c in candles_1h[-10:])
+        stop_by_sr = nearest_support - (atr * 0.5)
+
+    stop_loss = max(stop_by_sr, current_price * 0.95)   # حد أقصى خسارة 5%
+    stop_loss = min(stop_loss, current_price * 0.985)    # مش قريب أوي
+
+    # ── 4) الهدف 1: أقرب مقاومة أو 1.5x R:R ──
     risk = current_price - stop_loss
-    target_1 = current_price + (risk * 1.5)
+    if risk <= 0:
+        risk = atr
+    target_by_rr_1 = current_price + (risk * 1.5)
+    if resistances:
+        nearest_res = resistances[0]    # أقرب مقاومة فوق السعر
+        # نأخذ الأقل بين الهدفين (المقاومة الأقرب أكثر واقعية)
+        target_1 = min(target_by_rr_1, nearest_res * 0.998) if nearest_res > current_price * 1.005 else target_by_rr_1
+        sr_based = True
+    else:
+        target_1 = target_by_rr_1
+        sr_based = False
 
-    # ───── 4) الهدف 2: 3x المسافة، أو أقرب cluster قمم إذا موجود ─────
-    target_2_by_rr = current_price + (risk * 3.0)
-
-    # لو في liquidity sweep نجح، نستخدم أقرب pivot كهدف ذكي
-    target_2 = target_2_by_rr
-    if liq_sweep_result and liq_sweep_result.get("pass"):
-        # نحسب pivot highs ونجيب أقربهم
-        try:
-            pivots = []
-            for i in range(3, len(candles_1h) - 3):
-                h = candles_1h[i]["high"]
-                if (h > max(c["high"] for c in candles_1h[i-3:i]) and
-                    h > max(c["high"] for c in candles_1h[i+1:i+4])):
-                    pivots.append(h)
-            above = [p for p in pivots if p > current_price * 1.02]
-            if above:
-                nearest_cluster = min(above)  # أقرب قمة فوق
-                # نأخذ الأكبر بين هدف R:R وأقرب قمة (عشان منكسرش الـ R:R)
-                target_2 = max(target_2_by_rr, nearest_cluster * 0.998)  # بنخرج قبل القمة بشوية
-        except Exception:
-            pass
+    # ── 5) الهدف 2: المقاومة التالية أو 3x R:R ──
+    target_by_rr_2 = current_price + (risk * 3.0)
+    if resistances and len(resistances) >= 2:
+        second_res = resistances[1]
+        target_2 = min(target_by_rr_2, second_res * 0.998) if second_res > target_1 * 1.005 else target_by_rr_2
+    elif resistances and resistances[0] > target_1 * 1.005:
+        target_2 = min(target_by_rr_2, resistances[0] * 0.998)
+    else:
+        target_2 = target_by_rr_2
 
     rr_ratio = (target_1 - current_price) / risk if risk > 0 else 1.5
 
@@ -1077,6 +1273,7 @@ def calc_targets_and_stop(current_price, candles_1h, liq_sweep_result):
         "target_2":  target_2,
         "rr_ratio":  rr_ratio,
         "atr_pct":   atr_pct,
+        "sr_based":  sr_based,
     }
 
 
@@ -1115,14 +1312,24 @@ def format_pump_signal_message(result):
     e = _md2_escape  # اختصار
 
     # ───── الجزء الظاهر (ملخص فقط) ─────
-    # النسبة: كل أساسي = 15%، كل فرعي = 5% (8 شروط فرعية × 5% = 40%)
-    c = result["conditions"]
+    # النسبة بـ 4 مستويات للأساسيين:
+    # كل أساسي: tier0=0% / tier1=5% / tier2=10% / tier3=15%
+    # كل فرعي: pass=5% / fail=0%
     core_keys = ["funding_rate", "cvd_divergence", "taker_buy_ratio", "ob_imbalance"]
     supp_keys = ["vol_accel", "bid_wall", "whale_accum", "ema21_cross",
                  "mtf_buy", "short_liq", "first_3min", "early_surge"]
-    core_pct = sum(15 for k in core_keys if result["conditions"][k]["pass"])
-    supp_pct = sum(5  for k in supp_keys if result["conditions"][k]["pass"])
-    score_pct = core_pct + supp_pct
+    W_CORE_MAX = 6   # الوزن الأقصى لكل أساسي
+    core_pct = sum(
+        round(result["conditions"][k]["score"] / W_CORE_MAX * 15)
+        for k in core_keys
+    )
+    supp_pct = sum(5 for k in supp_keys if result["conditions"][k]["pass"])
+    # خصومات الدقة
+    filters = result.get("filters", {})
+    penalty = filters.get("confluence_penalty", 0) + filters.get("history_penalty", 0)
+    spread_warn = "" if filters.get("spread_ok", True) else f" ⚠️spread {filters.get('spread_pct',0)*100:.2f}%"
+    ema50_warn  = "" if filters.get("ema50_above", True) else " ⚠️تحت EMA50/4h"
+    score_pct = max(0, core_pct + supp_pct - penalty)
     vol_cmc_str = ""
     if result.get("volume_cmc_total", 0) > 0:
         cmc_vol = result["volume_cmc_total"]
@@ -1137,7 +1344,7 @@ def format_pump_signal_message(result):
         f"💎 *العملة:* `{e(sym)}USDT`",
         f"💰 *السعر:* `{e(fmt_price(price))}`",
         f"⭐ *الأساسية:* {result['core_passed']}/4",
-        f"📊 *النسبة:* {score_pct}% \({core_pct}% أساسية \+ {supp_pct}% فرعية\)",
+        f"📊 *النسبة:* {score_pct}% \({core_pct}% أساسية \+ {supp_pct}% فرعية{e(spread_warn)}{e(ema50_warn)}\)",
         f"🎯 *القوة:* {e(result['strength_label'])}",
         vol_cmc_str,
         "",
@@ -1254,6 +1461,9 @@ async def check_signals(bot: Bot, target_chat: int = None):
             d = parse_gate_ticker(t)
             if not d: continue
             if d["symbol"] in EXCLUDED_SYMBOLS: continue
+            if d["symbol"] in HARAM_SYMBOLS:
+                logger.debug(f"🚫 {d['symbol']} محرمة — تم تخطيها")
+                continue
             if d["volume_24h"] < MIN_VOL_FOR_SIGNAL: continue
             if d["price"] <= 0: continue
             candidates.append(d)
@@ -1299,10 +1509,29 @@ async def check_signals(bot: Bot, target_chat: int = None):
                     supp_ks = ["vol_accel", "bid_wall", "whale_accum", "ema21_cross",
                                "mtf_buy", "short_liq", "first_3min", "early_surge"]
                     conds = result["conditions"]
-                    result["score_pct"]  = (sum(15 for k in core_ks if conds[k]["pass"]) +
-                                            sum(5  for k in supp_ks if conds[k]["pass"]))
-                    result["core_pct"]   = sum(15 for k in core_ks if conds[k]["pass"])
-                    result["supp_pct"]   = sum(5  for k in supp_ks if conds[k]["pass"])
+                    W_CORE_MAX = 6
+                    core_p = sum(round(conds[k]["score"] / W_CORE_MAX * 15) for k in core_ks)
+                    supp_p = sum(5 for k in supp_ks if conds[k]["pass"])
+                    # Score History Penalty: لو سبق إرسالها وما تحركتش
+                    hist_penalty = 0
+                    sym = coin["symbol"]
+                    if sym in seen_signals:
+                        entry = seen_signals[sym]
+                        if isinstance(entry, tuple) and len(entry) >= 2:
+                            last_time = entry[0]
+                            elapsed_h = (datetime.now() - last_time).total_seconds() / 3600
+                            # لو في آخر 6 ساعات وما تحركتش = خصم
+                            price_then = entry[3] if len(entry) >= 4 else None
+                            if price_then and elapsed_h < 6:
+                                price_chg = abs(coin["price"] - price_then) / price_then
+                                if price_chg < HISTORY_FAIL_THRESHOLD:
+                                    hist_penalty = HISTORY_PENALTY_PCT
+                    result["filters"]["history_penalty"] = hist_penalty
+                    result["score_pct"]  = max(0, core_p + supp_p
+                                               - result["filters"].get("confluence_penalty", 0)
+                                               - hist_penalty)
+                    result["core_pct"]   = core_p
+                    result["supp_pct"]   = supp_p
                     return result
                 except Exception as e:
                     logger.warning(f"خطأ تحليل {coin['symbol']}: {e}")
@@ -1379,7 +1608,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
                                     parse_mode="MarkdownV2",
                                     disable_web_page_preview=True)
             # نخزن الوقت + النقاط + القوة (للسماح بإعادة الإرسال لو زادت أو ترقّت)
-            seen_signals[r["symbol"]] = (datetime.now(), r["score"], r["strength"])
+            seen_signals[r["symbol"]] = (datetime.now(), r["score"], r["strength"], r["price"])
             sent_count += 1
             await asyncio.sleep(0.7)
         except Exception as e:
@@ -1528,6 +1757,25 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+
+async def cmd_haram(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أمر /haram — يعرض قائمة العملات المحرمة ويتيح إضافة عملات"""
+    args = context.args
+    if args:
+        sym = args[0].upper().replace("USDT", "").strip()
+        HARAM_SYMBOLS.add(sym)
+        await update.message.reply_text(f"✅ تم إضافة {sym} لقائمة العملات المحرمة.")
+        return
+    if not HARAM_SYMBOLS:
+        await update.message.reply_text("القائمة فارغة.")
+        return
+    lines = ["🚫 *العملات المحرمة:*", "━━━━━━━━━━━━━━━━━━━━"]
+    for s in sorted(HARAM_SYMBOLS):
+        lines.append(f"  • {s}USDT")
+    lines += ["━━━━━━━━━━━━━━━━━━━━",
+              "لإضافة عملة: /haram SYMBOLUSDT"]
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
 async def cmd_btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر /btc — يعرض حالة البيتكوين الحالية وقرار الفلتر"""
     await update.message.reply_text("⏳ جاري جلب بيانات BTC...")
@@ -1586,7 +1834,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         last_str = "لم يبدأ بعد"
     await update.message.reply_text(
-        f"✅ Pump Detection Bot — v9.0\n\n"
+        f"✅ Pump Detection Bot — v10.0 (Pro)\n\n"
         f"🌐 المصدر: كل Gate.io USDT\n"
         f"   فلتر: فوليم >= ${MIN_VOL_FOR_SIGNAL/1_000:.0f}K\n"
         f"   📡 فلتر BTC: {'نشط' if BTC_FILTER_ENABLED else 'متوقف'}\n"
@@ -1615,8 +1863,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   11. Candle Momentum 🕯️\n"
         f"   12. Early Volume Surge 📈\n\n"
         f"✅ شرط الإرسال: 3/4 أساسية على الأقل\n"
-        f"🎯 هدف/استوب ديناميكي مبني على ATR\n"
-        f"🔒 Lock نشط ضد الإرسال المزدوج"
+        f"🎯 أهداف مبنية على S/R حقيقية\n"
+        f"🔒 Anti-Wash Trading نشط\n"
+        f"📐 Spread Filter: < {SPREAD_MAX_PCT*100:.1f}%\n"
+        f"📈 EMA50/4h Trend Filter نشط\n"
+        f"⚡ Confluence Check نشط\n"
+        f"📊 Score History Penalty: {HISTORY_PENALTY_PCT}%"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1639,7 +1891,7 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *Pump Detection Bot v9.0 — Gate.io*\n"
+                "🟢 *Pump Detection Bot v10.0 Pro — Gate.io*\n"
                 f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
                 f"🌐 يفحص كل عملات Gate.io USDT (فوليم ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M)\n"
                 f"⚡ 12 شرط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
@@ -1679,6 +1931,7 @@ def main():
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("chatid",  cmd_chatid))
     app.add_handler(CommandHandler("btc",     cmd_btc))
+    app.add_handler(CommandHandler("haram",   cmd_haram))
 
     load_seen_coins()
     load_seen_signals()   # ✅ v6.4
@@ -1694,7 +1947,7 @@ def main():
     # السكان يبدأ من post_init كـ background task
 
     print("="*60)
-    print("🚀 Pump Detection Bot v9.0 — Gate.io Edition")
+    print("🚀 Pump Detection Bot v10.0 — Gate.io Edition (Pro Accuracy)")
     print(f"🌐 المصدر: كل Gate.io USDT (سقف {GATE_MAX_CANDIDATES} عملة)")
     print(f"   فلتر أولي: فوليم 24h ≥ ${MIN_VOL_FOR_SIGNAL/1_000_000:.1f}M")
     print(f"   توازي: {GATE_PARALLEL_LIMIT} طلب")
