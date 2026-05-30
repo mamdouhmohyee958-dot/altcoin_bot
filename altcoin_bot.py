@@ -242,17 +242,17 @@ HARAM_SYMBOLS = {
 
 # ==================== قوائم الاستبعاد ====================
 EXCLUDED_SYMBOLS = {
-    "BTC","ETH","BNB","XRP","SOL","ADA","DOGE","TRX","AVAX","SHIB",
+    "BTC","ETH","BNB","XRP","SOL","ADA","TRX","AVAX","SHIB",
     "DOT","LINK","MATIC","LTC","BCH","XLM","ETC","UNI","ATOM","NEAR",
-    "FIL","ICP","HBAR","VET","ALGO","EGLD","TON","SUI","APT","OP",
-    "ARB","INJ","SEI","TIA","PYTH","JUP","WLD","RENDER","FET","TAO",
-    "IMX","GRT","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
-    "SAND","MANA","AXS","ENJ","CHZ","FLOW","GALA","THETA","FTM",
-    "ONE","ROSE","ZIL","ICX","QTUM","ZEC","XMR","DASH","DCR","XTZ",
-    "EOS","TRB","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
-    "ONT","ZEN","SC","DGB","RVN","IOST","STORJ","ANKR","CKB","CELR",
+    "FIL","TON","APT","OP",
+    "ARB","JUP","WLD","RENDER",
+    "IMX","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
+    "SAND","MANA","AXS","CHZ","FLOW","GALA","THETA","FTM",
+    "ONE","ROSE","ICX","XMR","
+    "EOS","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
+    "ONT","SC","DGB","IOST","ANKR","CELR",
     "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
-    "USDE","PYUSD","GUSD","LUSD","FRAX","SUSD","EURC","USDS",
+    "USDE","PYUSD","GUSD","LUSD","FRAX","EURC","USDS",
     "USD1","USDX","CUSD","MUSD","HUSD","USDJ","XUSD","ZUSD",
     "DUSD","NUSD","PUSD","CRVUSD","DOLA","PAX","PAXG","BEAN",
     "WBTC","WETH","STETH","CBETH","RETH","WBNB","WEETH","WSTETH",
