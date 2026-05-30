@@ -178,6 +178,12 @@ PUMP_W_EARLY_SURGE       = 1         # نقطة واحدة
 # الشرطين الجداد (13, 14)
 PUMP_W_VOL_PRICE_CONF    = 1         # 13) Volume/Price Confirmation
 PUMP_W_BUYSELL_PRESSURE  = 1         # 14) Buy/Sell Pressure
+
+# ───── تأكيد إلزامي للفوليم/الشراء (v11) ─────
+# الإشارة لازم يكون فيها تأكيد قوي واحد على الأقل من دول، غير كده تترفض
+CONFIRM_VOL_SURGE_X      = 2.0       # فوليم الشمعة >= 2x المتوسط
+CONFIRM_BUY_PRESSURE     = 0.62      # ضغط شراء >= 62%
+CONFIRM_REQUIRED         = True      # تفعيل الشرط الإلزامي
 PUMP_EARLY_SURGE_MIN_X   = 2.0       # فوليم أول شمعة 15m >= 2x متوسط الـ 7 شموع قبلها
 
 # ───── 🔮 Pre-Pump Detector (v11) — رصد الصعود قبل حدوثه ─────
@@ -240,19 +246,60 @@ HARAM_SYMBOLS = {
     # أضف هنا ↓
 }
 
+HARAM_FILE = "haram_symbols.json"
+
+def normalize_symbol(raw):
+    """تطبيع رمز العملة: حروف كبيرة + إزالة USDT/مسافات/رموز."""
+    if not raw:
+        return ""
+    s = str(raw).upper().strip()
+    # إزالة اللاحقات الشائعة
+    for suffix in ("_USDT", "/USDT", "-USDT", "USDT"):
+        if s.endswith(suffix):
+            s = s[:-len(suffix)]
+            break
+    # إزالة أي رموز غير حروف/أرقام
+    s = "".join(ch for ch in s if ch.isalnum())
+    return s.strip()
+
+def load_haram_symbols():
+    """تحميل العملات المحرمة من الملف ودمجها مع الافتراضية."""
+    global HARAM_SYMBOLS
+    try:
+        import os, json
+        if os.path.exists(HARAM_FILE):
+            with open(HARAM_FILE, "r", encoding="utf-8") as f:
+                saved = json.load(f)
+            # تطبيع كل الرموز المحمّلة
+            HARAM_SYMBOLS = {normalize_symbol(s) for s in saved if s}
+            # نضيف الافتراضية كمان
+            for s in ["FARTCOIN","CTR","UP","ESPORTS","SLX","BAS","BEAT","GENIUS"]:
+                HARAM_SYMBOLS.add(s)
+    except Exception:
+        pass
+
+def save_haram_symbols():
+    """حفظ العملات المحرمة في الملف."""
+    try:
+        import json
+        with open(HARAM_FILE, "w", encoding="utf-8") as f:
+            json.dump(sorted(HARAM_SYMBOLS), f, ensure_ascii=False)
+    except Exception:
+        pass
+
 # ==================== قوائم الاستبعاد ====================
 EXCLUDED_SYMBOLS = {
-    "BTC","ETH","BNB","XRP","SOL","ADA","TRX","AVAX","SHIB",
+    "BTC","ETH","BNB","XRP","SOL","ADA","DOGE","TRX","AVAX","SHIB",
     "DOT","LINK","MATIC","LTC","BCH","XLM","ETC","UNI","ATOM","NEAR",
-    "FIL","TON","APT","OP",
-    "ARB","JUP","WLD","RENDER",
-    "IMX","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
-    "SAND","MANA","AXS","CHZ","FLOW","GALA","THETA","FTM",
-    "ONE","ROSE","ICX","XMR","
-    "EOS","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
-    "ONT","SC","DGB","IOST","ANKR","CELR",
+    "FIL","ICP","HBAR","VET","ALGO","EGLD","TON","SUI","APT","OP",
+    "ARB","INJ","SEI","TIA","PYTH","JUP","WLD","RENDER","FET","TAO",
+    "IMX","GRT","STX","MKR","AAVE","SNX","COMP","CRV","LDO","RPL",
+    "SAND","MANA","AXS","ENJ","CHZ","FLOW","GALA","THETA","FTM",
+    "ONE","ROSE","ZIL","ICX","QTUM","ZEC","XMR","DASH","DCR","XTZ",
+    "EOS","TRB","BAT","ZRX","SUSHI","YFI","UMA","BAL","KNC","WAVES",
+    "ONT","ZEN","SC","DGB","RVN","IOST","STORJ","ANKR","CKB","CELR",
     "USDT","USDC","BUSD","DAI","TUSD","USDP","USDD","FDUSD",
-    "USDE","PYUSD","GUSD","LUSD","FRAX","EURC","USDS",
+    "USDE","PYUSD","GUSD","LUSD","FRAX","SUSD","EURC","USDS",
     "USD1","USDX","CUSD","MUSD","HUSD","USDJ","XUSD","ZUSD",
     "DUSD","NUSD","PUSD","CRVUSD","DOLA","PAX","PAXG","BEAN",
     "WBTC","WETH","STETH","CBETH","RETH","WBNB","WEETH","WSTETH",
@@ -1264,6 +1311,42 @@ def eval_prepump_detector(trades, ob, candles_15m, current_price, volume_24h):
     return {"score": score, "label": label, "signals": signals}
 
 
+def has_strong_confirmation(trades, candles_15m):
+    """
+    تأكيد إلزامي (v11): الإشارة لازم يكون فيها واحد على الأقل من:
+      1) انفجار فوليم: آخر شمعة 15m فوليمها >= 2x المتوسط
+      2) ضغط شراء قوي: >= 62% من فوليم الصفقات شراء
+    لو مفيش أي تأكيد → الإشارة ضعيفة وتترفض.
+    Returns: (confirmed: bool, reason: str)
+    """
+    # 1) انفجار فوليم
+    vol_ok = False
+    vol_x = 0
+    if candles_15m and len(candles_15m) >= 6:
+        vols = [c["volume"] for c in candles_15m[-6:-1]]
+        avg = sum(vols) / len(vols) if vols else 0
+        if avg > 0:
+            vol_x = candles_15m[-1]["volume"] / avg
+            vol_ok = vol_x >= CONFIRM_VOL_SURGE_X
+
+    # 2) ضغط شراء
+    buy_ok = False
+    buy_pct = 0
+    if trades and len(trades) >= 20:
+        bv = sum(t["qty"]*t["price"] for t in trades if t["side"]=="buy" and t["price"]>0)
+        tv = sum(t["qty"]*t["price"] for t in trades if t["price"]>0)
+        if tv > 0:
+            buy_pct = bv / tv
+            buy_ok = buy_pct >= CONFIRM_BUY_PRESSURE
+
+    if vol_ok or buy_ok:
+        parts = []
+        if vol_ok: parts.append(f"فوليم {vol_x:.1f}x")
+        if buy_ok: parts.append(f"شراء {buy_pct*100:.0f}%")
+        return True, " + ".join(parts)
+    return False, f"ضعيف (فوليم {vol_x:.1f}x، شراء {buy_pct*100:.0f}%)"
+
+
 async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     """
     v10 — يقيم الـ 12 شرط + 5 فلاتر دقة على عملة واحدة
@@ -1302,6 +1385,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "breakeven": current_price*1.04,
             "rr_ratio": 1.0, "atr_pct": 3.0, "trail_pct": 2.0,
             "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}},
+            "confirmed": False, "confirm_reason": "wash",
             "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
                 ["funding_rate","cvd_divergence","taker_buy_ratio","ob_imbalance",
                  "vol_accel","bid_wall","whale_accum","ema21_cross","mtf_buy",
@@ -1374,6 +1458,9 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     # 🔮 Pre-Pump Detector — رصد الصعود قبل حدوثه
     prepump = eval_prepump_detector(trades, ob, kl15m, current_price, volume_24h)
 
+    # تأكيد إلزامي للفوليم/الشراء
+    confirmed, confirm_reason = has_strong_confirmation(trades, kl15m)
+
     # v11: أهداف ديناميكية مبنية على ATR + الزخم (Pre-Pump score)
     targets = calc_targets_and_stop(current_price, kl1h, kl15m,
                                      momentum_score=prepump["score"])
@@ -1395,6 +1482,8 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "trail_pct":  targets.get("trail_pct", 2.0),
         "sr_based":   targets.get("sr_based", False),
         "prepump":    prepump,
+        "confirmed":  confirmed,
+        "confirm_reason": confirm_reason,
         "conditions": {
             "funding_rate":     r1,
             "cvd_divergence":   r2,
@@ -1660,6 +1749,7 @@ def format_pump_signal_message(result):
         f"📊 *النسبة:* {score_pct}% \\({core_pct}% أساسية \\+ {supp_pct}% فرعية" + (f" \\+ {prepump_bonus}% مبكر" if prepump_bonus else "") + f"{e(spread_warn)}{e(ema50_warn)}\\)",
         f"🎯 *القوة:* {e(result['strength_label'])}",
         f"🔮 *Pre\\-Pump:* {prepump['score']}/100",
+        f"✅ *تأكيد:* {e(result.get('confirm_reason', '—'))}",
         vol_cmc_str,
         "",
         "━━━ 📍 *الدخول والخروج* ━━━",
@@ -1865,7 +1955,7 @@ async def check_signals(bot: Bot, target_chat: int = None):
             d = parse_gate_ticker(t)
             if not d: continue
             if d["symbol"] in EXCLUDED_SYMBOLS: continue
-            if d["symbol"] in HARAM_SYMBOLS:
+            if normalize_symbol(d["symbol"]) in HARAM_SYMBOLS:
                 logger.debug(f"🚫 {d['symbol']} محرمة — تم تخطيها")
                 continue
             if is_leveraged_token(d["symbol"]):
@@ -1962,7 +2052,8 @@ async def check_signals(bot: Bot, target_chat: int = None):
     # 4️⃣ فلترة: نحتفظ بالإشارات MODERATE+ فقط (لا Early Warning)
     all_results     = [r for r in results if r and not isinstance(r, Exception)]
     main_signals    = [r for r in all_results if r["strength"] in ("STRONG", "MODERATE")
-                       and r.get("score_pct", 0) >= MIN_SCORE]
+                       and r.get("score_pct", 0) >= MIN_SCORE
+                       and (not CONFIRM_REQUIRED or r.get("confirmed", False))]
 
     # ✅ v6.4 — diagnostic: نعرض كم عملة وصلت لكل مستوى
     strong_count   = sum(1 for r in all_results if r["strength"] == "STRONG")
@@ -2203,7 +2294,7 @@ async def cmd_gainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d = parse_gate_ticker(t)
             if not d: continue
             if d["symbol"] in EXCLUDED_SYMBOLS: continue
-            if d["symbol"] in HARAM_SYMBOLS: continue
+            if normalize_symbol(d["symbol"]) in HARAM_SYMBOLS: continue
             if is_leveraged_token(d["symbol"]): continue   # توكن رافعة
             if d["price"] <= 0: continue
             # نتجاهل العملات الميتة (فوليم أقل من الحد)
@@ -2288,21 +2379,43 @@ async def cmd_volume(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_haram(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """أمر /haram — يعرض قائمة العملات المحرمة ويتيح إضافة عملات"""
+    """أمر /haram — عرض/إضافة/حذف العملات المحرمة (محفوظة في ملف)"""
     args = context.args
     if args:
-        sym = args[0].upper().replace("USDT", "").strip()
-        HARAM_SYMBOLS.add(sym)
-        await update.message.reply_text(f"✅ تم إضافة {sym} لقائمة العملات المحرمة.")
+        action = args[0].lower()
+        # حذف: /haram del SYMBOL
+        if action in ("del", "delete", "remove", "حذف") and len(args) >= 2:
+            sym = normalize_symbol(args[1])
+            if sym in HARAM_SYMBOLS:
+                HARAM_SYMBOLS.discard(sym)
+                save_haram_symbols()
+                await update.message.reply_text(f"✅ تم حذف {sym} من المحرمة.")
+            else:
+                await update.message.reply_text(f"⚠️ {sym} مش موجودة في القائمة.")
+            return
+        # إضافة (عملة واحدة أو أكتر): /haram SYM1 SYM2 ...
+        added = []
+        for a in args:
+            sym = normalize_symbol(a)
+            if sym and sym not in ("DEL","DELETE","REMOVE"):
+                HARAM_SYMBOLS.add(sym)
+                added.append(sym)
+        if added:
+            save_haram_symbols()
+            await update.message.reply_text(
+                f"✅ تم إضافة: {', '.join(added)}\nإجمالي المحرمة: {len(HARAM_SYMBOLS)}"
+            )
         return
+    # عرض القائمة
     if not HARAM_SYMBOLS:
         await update.message.reply_text("القائمة فارغة.")
         return
-    lines = ["🚫 *العملات المحرمة:*", "━━━━━━━━━━━━━━━━━━━━"]
+    lines = [f"🚫 *العملات المحرمة* ({len(HARAM_SYMBOLS)}):", "━━━━━━━━━━━━━━━━━━━━"]
     for s in sorted(HARAM_SYMBOLS):
         lines.append(f"  • {s}USDT")
     lines += ["━━━━━━━━━━━━━━━━━━━━",
-              "لإضافة عملة: /haram SYMBOLUSDT"]
+              "➕ إضافة: /haram SYMBOL",
+              "➖ حذف: /haram del SYMBOL"]
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 async def cmd_btc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2472,6 +2585,7 @@ def main():
 
     load_seen_coins()
     load_seen_signals()   # ✅ v6.4
+    load_haram_symbols()  # ✅ v11 — تحميل المحرمة المحفوظة
 
     # ✅ التأكد من إضافة الـ jobs مرة واحدة فقط
     jq = app.job_queue
