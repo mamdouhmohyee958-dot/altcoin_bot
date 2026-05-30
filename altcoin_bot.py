@@ -243,6 +243,8 @@ HARAM_SYMBOLS = {
     "BAS",     # BASUSDT
     "BEAT",    # BEATUSDT
     "GENIUS",  # GENIUSUSDT
+    "BTR",     # BTRUSDT
+    "LEO",     # LEOUSDT
     # أضف هنا ↓
 }
 
@@ -273,7 +275,7 @@ def load_haram_symbols():
             # تطبيع كل الرموز المحمّلة
             HARAM_SYMBOLS = {normalize_symbol(s) for s in saved if s}
             # نضيف الافتراضية كمان
-            for s in ["FARTCOIN","CTR","UP","ESPORTS","SLX","BAS","BEAT","GENIUS"]:
+            for s in ["FARTCOIN","CTR","UP","ESPORTS","SLX","BAS","BEAT","GENIUS","BTR","LEO"]:
                 HARAM_SYMBOLS.add(s)
     except Exception:
         pass
