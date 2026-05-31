@@ -23,7 +23,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ==================== الاعدادات ====================
 TELEGRAM_TOKEN = "8608851079:AAErIr1R1l7zl4odFE1AH8uUUOHQjxiwYwI"
 ADMIN_CHAT_ID  = "6914157653"
-CMC_API_KEY    = "0b745907ec3e4c7d979124ca69dab335"
+CMC_API_KEY    = "0b745907ec3e4c7d979124ca69dab35"
 
 CMC_LIMIT             = 1500
 
