@@ -2721,12 +2721,14 @@ async def _post_init(app: Application):
         await app.bot.send_message(
             chat_id=int(ADMIN_CHAT_ID),
             text=(
-                "🟢 *Pump Detection Bot v11.0 — Gate.io*\n"
-                f"🚀 السكان المستمر: شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
-                f"🌐 يفحص كل عملات Gate.io USDT (2500+ عملة)\n"
-        f"⚡ Pre-scan سريع → تحليل كامل للنشطة فقط\n"
-                f"⚡ 12 شرط نشطة | المجموع: {PUMP_MAX_SCORE} نقاط\n"
-                f"🚀 STRONG ≥ {PUMP_SCORE_STRONG} | ⚠️ MODERATE ≥ {PUMP_SCORE_MODERATE}"
+                "🟢 *Pump Detection Bot — Gate.io*\n"
+                f"🚀 السكان المستمر شغال (فاصل {SIGNAL_LOOP_GAP_SECONDS}ث)\n"
+                f"🌐 يفحص كل عملات Gate.io USDT\n"
+                f"💎 شرط الفوليم: إجمالي كل المنصات ≥ ${STRICT_MIN_TOTAL_VOL/1_000_000:.0f}M\n"
+                f"⭐ 4 شروط أساسية + 11 شرط فرعي\n"
+                f"✅ تأكيد إلزامي: فوليم/شراء + فوق VWAP\n"
+                f"💥 نظام رصد البامبات الكبيرة نشط\n"
+                f"🎯 أهداف/استوب ديناميكية حسب الزخم"
             ),
             parse_mode="Markdown",
         )
