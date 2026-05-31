@@ -23,9 +23,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 # ==================== الاعدادات ====================
 TELEGRAM_TOKEN = "8608851079:AAErIr1R1l7zl4odFE1AH8uUUOHQjxiwYwI"
 ADMIN_CHAT_ID  = "6914157653"
-CMC_API_KEY    = "7eeaf1fd132e416ab49279ee21cc6ce0"
+CMC_API_KEY    = "0b745907ec3e4c7d979124ca69dab335"
 
-CMC_LIMIT             = 1000
+CMC_LIMIT             = 1500
 
 # ==================== فلتر البيتكوين ====================
 BTC_FILTER_ENABLED    = True
