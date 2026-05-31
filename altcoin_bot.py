@@ -59,7 +59,7 @@ HISTORY_FAIL_THRESHOLD   = 0.005   # السعر ما تغيرش أكتر من 0.
 
 # ==================== اعدادات الاشارات ====================
 MIN_SCORE          = 45       # الحد الأدنى للإرسال (نسبة مئوية %)
-MIN_VOL_FOR_SIGNAL = 1_000_000
+MIN_VOL_FOR_SIGNAL = 10_000
 
 # ✅ جديد v3.1: سكان البامب المستمر
 SIGNAL_LOOP_GAP_SECONDS = 120     # ✅ v4.1: 120ث بدل 90 (لأن الفحص الآن أكبر)
@@ -69,7 +69,7 @@ GATE_MAX_CANDIDATES       = 5000       # فحص كل عملات Gate.io
 GATE_PARALLEL_LIMIT       = 30         # طلبات متوازية
 
 # ── Pre-scan Filter (المرحلة 1) ──
-PRESCAN_MIN_VOL_24H       = 1_000_000  # فوليم 24h ≥ $1M
+PRESCAN_MIN_VOL_24H       = 10_000  # فوليم 24h ≥ $1M
 PRESCAN_MIN_CHANGE_24H    = -15.0      # تغيّر 24h > -15% (مش انهيار)
 PRESCAN_MAX_CHANGE_24H    = 25.0       # تغيّر 24h < +25% (مش فات القطار)
 PRESCAN_MIN_ACTIVITY      = 0.3        # range_24h / price ≥ 0.3% (في حركة)
@@ -193,7 +193,7 @@ STRICT_MODE              = True      # وضع الدقة العالية
 STRICT_MIN_CORE          = 3         # 3/4 أساسية على الأقل
 STRICT_MIN_PREPUMP       = 0         # Pre-Pump مش إلزامي (للعلم بس)
 STRICT_SPREAD_REQUIRED   = True      # رفض لو spread واسع
-STRICT_MIN_TOTAL_VOL     = 1_000_000 # الفوليم الإجمالي CMC >= $1M
+STRICT_MIN_TOTAL_VOL     = 5_000_000 # الفوليم الإجمالي CMC >= $5M (الشرط الأساسي)
 
 # ═══════════ نظام الانفجارات الكبيرة (Big Pump Detector) ═══════════
 # يرصد العملات المرشحة لبامب كبير (+15%) عبر مرحلتين:
@@ -1891,195 +1891,95 @@ def _md2_escape(text):
 
 def format_pump_signal_message(result):
     """
-    تنسيق الإشارة — 12 شرط + هدف/استوب ديناميكي + spoiler للشروط
-    يستخدم Telegram MarkdownV2 — الشروط مخفية داخل ||spoiler|| تتكشف بالضغط.
+    ستايل إنجليزي مختصر — بدون نقاط/نسبة، الفوليم الإجمالي، تأكيد، SL/TP/RR.
+    يستخدم Telegram MarkdownV2.
     """
+    e = _md2_escape
     c = result["conditions"]
     sym = result["symbol"]
     price = result["price"]
     sl = result["stop_loss"]
     tgt = result["target"]
-    be = result.get("breakeven", price)
-    sl_pct = (sl - price) / price * 100
-    tgt_pct = (tgt - price) / price * 100
-    be_pct = (be - price) / price * 100
+    sl_pct = (sl - price) / price * 100 if price else 0
+    tgt_pct = (tgt - price) / price * 100 if price else 0
     rr = result.get("rr_ratio", 2.0)
-    atr_pct = result.get("atr_pct", 3.0)
-    trail_pct = result.get("trail_pct", 2.0)
-    prepump = result.get("prepump", {"score": 0, "label": "", "signals": {}})
+    change_24h = result.get("price_change_24h", 0)
+    total_vol = result.get("volume_cmc_total", 0)
+    prepump = result.get("prepump", {"score": 0})
+    bigpump = result.get("bigpump", {"score": 0, "stage": "none", "label": ""})
 
-    e = _md2_escape  # اختصار
+    # نوع الإشارة
+    strength = result.get("strength") or "SIGNAL"
+    sig_word = "STRONG SIGNAL" if strength == "STRONG" else ("MODERATE SIGNAL" if strength == "MODERATE" else "SIGNAL")
+    head_emoji = "🚀" if strength == "STRONG" else "📊"
 
-    # ───── الجزء الظاهر (ملخص فقط) ─────
-    # النسبة بـ 4 مستويات للأساسيين:
-    # كل أساسي: tier0=0% / tier1=5% / tier2=10% / tier3=15% (المجموع 60%)
-    # كل فرعي: pass=4% / fail=0% (10 فرعية × 4% = 40%)
-    core_keys = ["funding_rate", "cvd_divergence", "taker_buy_ratio", "ob_imbalance"]
-    supp_keys = ["vol_accel", "bid_wall", "whale_accum", "ema21_cross",
-                 "mtf_buy", "short_liq", "first_3min", "early_surge",
-                 "vol_price_conf", "buysell_press", "sustained_buy"]
-    W_CORE_MAX = 6   # الوزن الأقصى لكل أساسي
-    core_pct = sum(
-        round(result["conditions"][k]["score"] / W_CORE_MAX * 15)
-        for k in core_keys
-    )
-    supp_pct = sum(4 for k in supp_keys if result["conditions"][k]["pass"])
-    # خصومات الدقة والمكافآت
-    filters = result.get("filters", {})
-    penalty = filters.get("confluence_penalty", 0) + filters.get("history_penalty", 0)
-    prepump_bonus = filters.get("prepump_bonus", 0)
-    spread_warn = "" if filters.get("spread_ok", True) else f" ⚠️spread {filters.get('spread_pct',0)*100:.2f}%"
-    ema50_warn  = "" if filters.get("ema50_above", True) else " ⚠️تحت EMA50/4h"
-    score_pct = min(100, max(0, core_pct + supp_pct + prepump_bonus - penalty))
-
-    def _fmt_vol(v):
-        if v >= 1_000_000_000:
-            return f"${v/1_000_000_000:.2f}B"
-        if v >= 1_000_000:
-            return f"${v/1_000_000:.2f}M"
+    # فورمات الفوليم
+    def fmt_v(v):
+        if v >= 1_000_000_000: return f"${v/1_000_000_000:.1f}B"
+        if v >= 1_000_000:     return f"${v/1_000_000:.1f}M"
         return f"${v/1_000:.0f}K"
 
-    cmc_vol  = result.get("volume_cmc_total", 0)
-    gate_vol = result.get("volume_24h", 0)
-    if cmc_vol > 0:
-        vol_cmc_str = f"\n🌐 *فوليم كل المنصات:* `{e(_fmt_vol(cmc_vol))}`"
-    elif gate_vol > 0:
-        # CMC غير متاح — نعرض فوليم Gate.io كبديل
-        vol_cmc_str = f"\n📡 *فوليم Gate\\.io:* `{e(_fmt_vol(gate_vol))}` \\(الإجمالي غير متاح\\)"
-    else:
-        vol_cmc_str = ""
-
-    # سطر Big Pump Detector
-    bigpump = result.get("bigpump", {"score": 0, "stage": "none", "label": "", "signals": {}})
-    if bigpump["stage"] == "ignition":
-        bigpump_line = f"💥 *بامب كبير:* {e(bigpump['label'])}"
-    elif bigpump["stage"] == "early":
-        bigpump_line = f"⚡ *تحذير بامب كبير:* درجة {bigpump['score']}/100"
-    else:
-        bigpump_line = None
-
-    # سطر Pre-Pump Detector
-    prepump_str = ""
-    if prepump["score"] >= PREPUMP_STRONG_THRESHOLD:
-        prepump_str = f"\n{e(prepump['label'])}"
-
-    header_lines = [
-        f"{result['strength_emoji']} *إشارة بامب محتملة*",
-        "━" * 18,
-        f"💎 *العملة:* `{e(sym)}USDT`",
-        f"💰 *السعر:* `{e(fmt_price(price))}`",
-        f"⭐ *الأساسية:* {result['core_passed']}/4",
-        f"🎯 *القوة:* {e(result['strength_label'])}",
-        f"🔮 *Pre\\-Pump:* {prepump['score']}/100",
-        bigpump_line,
-        f"✅ *تأكيد:* {e(result.get('confirm_reason', '—'))}",
-        vol_cmc_str,
-        "",
-        "━━━ 📍 *الدخول والخروج* ━━━",
-        f"🟢 *الدخول:* `{e(fmt_price(price))}`",
-        f"🔒 *نقطة التأمين:* `{e(fmt_price(be))}` \\({e(f'{be_pct:+.2f}%')}\\)" + (" 📌مقاومة" if result.get('sr_based') else ""),
-        f"      ↳ عند الوصول، حرّك الاستوب للدخول \\(صفر خسارة\\)",
-        f"🎯 *الهدف:* `{e(fmt_price(tgt))}` \\({e(f'{tgt_pct:+.2f}%')}\\)",
-        f"🛑 *الاستوب:* `{e(fmt_price(sl))}` \\({e(f'{sl_pct:+.2f}%')}\\)",
-        f"📈 *Trailing:* `{e(f'{trail_pct:.1f}%')}` \\(استوب متحرك بعد التأمين\\)",
-        f"⚖️ *R:R:* `{e(f'{rr:.2f}')}` \\| *ATR:* `{e(f'{atr_pct:.1f}%')}`",
-        "",
+    lines = [
+        f"{head_emoji} *{e(sym)}/USDT* — {e(sig_word)}",
+        f"💰 Price: `{e(fmt_price(price))}`",
+        f"📈 24h: {e(f'{change_24h:+.2f}%')} \\| Vol: `{e(fmt_v(total_vol))}`",
     ]
 
-    # ───── الجزء المخفي (spoiler) — تفاصيل الشروط ─────
-    items = [
-        ("⭐", "Funding Rate",       c["funding_rate"]),
-        ("⭐", "CVD Divergence",     c["cvd_divergence"]),
-        ("⭐", "Taker Buy Ratio",    c["taker_buy_ratio"]),
-        ("⭐", "Order Book Imb\\.",  c["ob_imbalance"]),
-        ("",   "Volume Accel\\.",    c["vol_accel"]),
-        ("",   "Bid Wall",            c["bid_wall"]),
-        ("",   "Whale Accum\\.",     c["whale_accum"]),
-        ("",   "RSI Momentum 📈",   c["ema21_cross"]),
-        ("",   "Higher Lows 📐",    c["mtf_buy"]),
-        ("",   "Liquidity Grab 🎯",  c["short_liq"]),
-        ("",   "Candle Momentum 🕯️", c["first_3min"]),
-        ("",   "Early Surge 📈",    c["early_surge"]),
-        ("",   "Vol/Price Conf ✅",  c["vol_price_conf"]),
-        ("",   "Buy/Sell Press ⚖️", c["buysell_press"]),
-        ("",   "Sustained Buy 🟢",  c["sustained_buy"]),
+    # سطر البامب الكبير (لو موجود)
+    if bigpump.get("stage") == "ignition":
+        lines.append(f"💥 *BIG PUMP:* {e(bigpump.get('label',''))}")
+    elif bigpump.get("stage") == "early":
+        lines.append(f"⚡ *Big Pump Alert:* {bigpump.get('score',0)}/100")
+
+    # التأكيد (ظاهر)
+    conf = result.get("confirm_reason", "")
+    if result.get("confirmed"):
+        lines.append(f"✅ Confirmed: {e(conf)}")
+    else:
+        lines.append(f"⚠️ {e(conf)}")
+
+    # ───── كل الشروط في spoiler (مخفية حتى الضغط) ─────
+    all_conds = [
+        ("⭐", "Funding Rate",     c["funding_rate"]),
+        ("⭐", "CVD Divergence",   c["cvd_divergence"]),
+        ("⭐", "Taker Buy Ratio",  c["taker_buy_ratio"]),
+        ("⭐", "OB Imbalance",     c["ob_imbalance"]),
+        ("",   "Volume Accel",     c["vol_accel"]),
+        ("",   "Bid Wall",         c["bid_wall"]),
+        ("",   "Whale Accum",      c["whale_accum"]),
+        ("",   "RSI Momentum",     c["ema21_cross"]),
+        ("",   "Higher Lows",      c["mtf_buy"]),
+        ("",   "Liquidity Grab",   c["short_liq"]),
+        ("",   "Candle Momentum",  c["first_3min"]),
+        ("",   "Early Surge",      c["early_surge"]),
+        ("",   "Vol/Price Conf",   c["vol_price_conf"]),
+        ("",   "Buy/Sell Press",   c["buysell_press"]),
+        ("",   "Sustained Buy",    c["sustained_buy"]),
     ]
-    detail_lines = ["📋 الشروط بالتفصيل:", ""]
-    for marker, name, r in items:
+    detail = ["*Conditions:*"]
+    for marker, name, r in all_conds:
         icon = "✅" if r["pass"] else "❌"
         lbl = e(r.get("label", ""))
-        prefix = f"{icon} {marker} " if marker else f"{icon} "
-        detail_lines.append(f"{prefix}{name}: {lbl}")
-    detail_lines.append("")
-    detail_lines.append("⭐ \\= شرط أساسي")
-    # تفاصيل Pre-Pump Detector
-    pp_sig = prepump.get("signals", {})
-    if pp_sig:
-        detail_lines.append("")
-        detail_lines.append(f"🔮 Pre\\-Pump \\({prepump['score']}/100\\):")
-        if "whales" in pp_sig:
-            detail_lines.append(f"  🐋 صفقات كبيرة: {pp_sig['whales']}")
-        if "wall_ratio" in pp_sig:
-            detail_lines.append(f"  🧱 جدار شراء: {e(str(pp_sig['wall_ratio']))}x")
-        if "vol_surge" in pp_sig:
-            detail_lines.append(f"  📊 انفجار فوليم: {e(str(pp_sig['vol_surge']))}x")
-        if "buy_accel" in pp_sig:
-            detail_lines.append(f"  ⚡ تسارع شراء: {e(str(pp_sig['buy_accel']))}")
-    # تفاصيل Big Pump Detector
-    bp_sig = bigpump.get("signals", {})
-    if bigpump.get("stage") in ("early", "ignition") and bp_sig:
-        detail_lines.append("")
-        detail_lines.append(f"💥 Big Pump \\({bigpump['score']}/100\\):")
-        if "whales" in bp_sig:
-            detail_lines.append(f"  🐋 حيتان ضخمة: {bp_sig['whales']}")
-        if "buy_pressure" in bp_sig:
-            detail_lines.append(f"  ⚖️ ضغط شراء: {bp_sig['buy_pressure']}%")
-        if "wall_ratio" in bp_sig:
-            detail_lines.append(f"  🧱 جدار شراء: {e(str(bp_sig['wall_ratio']))}x")
-        if "vol_surge" in bp_sig:
-            detail_lines.append(f"  📊 فوليم: {e(str(bp_sig['vol_surge']))}x")
-        if "price_move" in bp_sig:
-            detail_lines.append(f"  📈 حركة السعر: {e(str(bp_sig['price_move']))}%")
-    detail_text = "\n".join(detail_lines)
-    # نلف الجزء كله في spoiler واحد
-    spoiler_block = f"👁 *اضغط لإظهار التفاصيل:*\n||{detail_text}||"
+        star = f"{marker} " if marker else ""
+        detail.append(f"{icon} {star}{name}: {lbl}")
+    detail.append("⭐ \\= core")
+    detail_text = chr(10).join(detail)
+    lines.append("👁 *Tap for details:*" + chr(10) + "||" + detail_text + "||")
 
-    # ───── التذييل ─────
-    # حالة BTC الكاملة (تظهر مع كل توصية)
-    btc_st = result.get("btc_status_full")
-    btc_block = ""
-    if btc_st:
-        emoji_map = {
-            "BULLISH": "🟢", "NEUTRAL": "🟢", "BEARISH_LIGHT": "🟡",
-            "HIGH_VOL": "🟡", "BEARISH_STRONG": "🔴", "CRASH": "🚨", "UNKNOWN": "❓",
-        }
-        name_map = {
-            "BULLISH": "Bullish", "NEUTRAL": "Neutral", "BEARISH_LIGHT": "Bearish خفيف",
-            "HIGH_VOL": "تقلب عالي", "BEARISH_STRONG": "Bearish قوي",
-            "CRASH": "Crash", "UNKNOWN": "غير معروف",
-        }
-        bem = emoji_map.get(btc_st["status"], "❓")
-        bnm = name_map.get(btc_st["status"], "?")
-        ch1 = f"{btc_st['change_1h']:+.2f}%"
-        ch4 = f"{btc_st['change_4h']:+.2f}%"
-        btc_block = (f"\n{bem} *BTC:* {e(bnm)} "
-                     f"\\(1h {e(ch1)} \\| 4h {e(ch4)}\\)")
+    lines.append("")
+    lines.append(f"📉 SL: `{e(fmt_price(sl))}` \\({e(f'{sl_pct:+.1f}%')}\\)")
+    lines.append(f"🎯 TP: `{e(fmt_price(tgt))}` \\({e(f'{tgt_pct:+.1f}%')}\\)")
+    lines.append(f"⚖️ R:R `{e(f'{rr:.1f}')}:1`")
 
-    btc_warn = result.get("btc_warning")
-    btc_warn_line = f"\n⚠️ {e(btc_warn)}" if btc_warn else ""
-    footer = [
-        "",
-        "━" * 18,
-        f"⏰ {e(datetime.now().strftime('%H:%M:%S'))} \\| 📡 Gate\\.io{btc_block}{btc_warn_line}",
-    ]
+    # حالة BTC (سطر واحد مختصر)
+    btc = result.get("btc_status_full")
+    if btc:
+        emoji = {"BULLISH":"🟢","NEUTRAL":"🟢","BEARISH_LIGHT":"🟡","HIGH_VOL":"🟡",
+                 "BEARISH_STRONG":"🔴","CRASH":"🚨","UNKNOWN":"❓"}.get(btc["status"],"❓")
+        lines.append(f"{emoji} BTC 4h: {e(f"{btc['change_4h']:+.1f}%")}")
 
-    header_lines_final = [l for l in header_lines if l is not None]
-    return "\n".join(header_lines_final + [spoiler_block] + footer)
+    return "\n".join([l for l in lines if l is not None])
 
-
-# ════════════════════════════════════════════════════════════════════
-# ✅ v8.0 — فحص إشارات البامب (الـ 12 شرط)
-# ════════════════════════════════════════════════════════════════════
 
 def prescan_filter(coins):
     """
@@ -2299,17 +2199,35 @@ async def check_signals(bot: Bot, target_chat: int = None):
         # 2) الوضع الصارم
         if r.get("core_passed", 0) < STRICT_MIN_CORE:          # 3/4 أساسية
             return False
-        if r.get("prepump", {}).get("score", 0) < STRICT_MIN_PREPUMP:  # Pre-Pump >= 60
+        if r.get("prepump", {}).get("score", 0) < STRICT_MIN_PREPUMP:
             return False
         if STRICT_SPREAD_REQUIRED and not r.get("filters", {}).get("spread_ok", True):
             return False
-        # 3) الفوليم الإجمالي CMC (لو متاح)
-        total_vol = r.get("volume_cmc_total", 0)
-        if total_vol > 0 and total_vol < STRICT_MIN_TOTAL_VOL:
-            return False
         return r["strength"] in ("STRONG", "MODERATE")
 
-    main_signals = [r for r in all_results if passes_strict(r)]
+    # المرشحين الأوليين (قبل فلتر الفوليم الإجمالي)
+    candidates_sig = [r for r in all_results if passes_strict(r)]
+
+    # نجيب الفوليم الإجمالي من CMC للمرشحين ونطبّق شرط الـ $5M
+    main_signals = []
+    if candidates_sig:
+        async with aiohttp.ClientSession() as vol_session:
+            for r in candidates_sig:
+                tv = r.get("volume_cmc_total", 0)
+                if tv <= 0:
+                    # نجيبه مباشرة من CMC
+                    try:
+                        q = await fetch_cmc_quote(vol_session, r["symbol"])
+                        if q:
+                            tv = q.get("volume_24h", 0)
+                            r["volume_cmc_total"] = tv
+                    except Exception:
+                        tv = 0
+                # شرط إلزامي: الفوليم الإجمالي >= $5M
+                if tv >= STRICT_MIN_TOTAL_VOL:
+                    main_signals.append(r)
+                else:
+                    logger.info(f"تخطي {r['symbol']} — فوليم إجمالي ${tv/1e6:.1f}M < ${STRICT_MIN_TOTAL_VOL/1e6:.0f}M")
 
     # ✅ v6.4 — diagnostic: نعرض كم عملة وصلت لكل مستوى
     strong_count   = sum(1 for r in all_results if r["strength"] == "STRONG")
