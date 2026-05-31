@@ -194,6 +194,24 @@ STRICT_MIN_CORE          = 3         # 3/4 أساسية على الأقل
 STRICT_MIN_PREPUMP       = 0         # Pre-Pump مش إلزامي (للعلم بس)
 STRICT_SPREAD_REQUIRED   = True      # رفض لو spread واسع
 STRICT_MIN_TOTAL_VOL     = 1_000_000 # الفوليم الإجمالي CMC >= $1M
+
+# ═══════════ نظام الانفجارات الكبيرة (Big Pump Detector) ═══════════
+# يرصد العملات المرشحة لبامب كبير (+15%) عبر مرحلتين:
+# 1) تحذير مبكر: تجميع حيتان ضخم + ضغط شراء + فوليم بيتراكم
+# 2) تأكيد الانفجار: أول حركة سعرية قوية مع فوليم ضخم
+BIGPUMP_ENABLED          = True
+BIGPUMP_TARGET_PCT       = 15.0      # البامب الكبير = +15%+
+# --- معايير التحذير المبكر ---
+BIGPUMP_WHALE_MIN        = 4         # 4+ صفقات حوت ضخمة
+BIGPUMP_VOL_SURGE_X      = 3.0       # فوليم 15m >= 3x المتوسط
+BIGPUMP_BUY_PRESSURE     = 0.68      # ضغط شراء >= 68%
+BIGPUMP_OB_RATIO         = 3.0       # جدار شراء >= 3x الـ asks
+# --- معايير تأكيد الانفجار ---
+BIGPUMP_IGNITION_PCT     = 3.0       # أول +3% في آخر 15m
+BIGPUMP_IGNITION_VOL_X   = 5.0       # مع فوليم 5x المتوسط
+# --- الدرجة ---
+BIGPUMP_EARLY_THRESHOLD  = 70        # درجة >= 70 = تحذير مبكر
+BIGPUMP_IGNITION_THRESHOLD = 85      # درجة >= 85 = انفجار وشيك جداً
 PUMP_EARLY_SURGE_MIN_X   = 2.0       # فوليم أول شمعة 15m >= 2x متوسط الـ 7 شموع قبلها
 
 # ───── 🔮 Pre-Pump Detector (v11) — رصد الصعود قبل حدوثه ─────
@@ -1270,6 +1288,119 @@ def eval_sustained_buy_pressure(candles_1h):
     }
 
 
+def eval_big_pump_detector(trades, ob, candles_15m, current_price, volume_24h):
+    """
+    💥 Big Pump Detector — يرصد العملات المرشحة لبامب كبير (+15%+).
+    مرحلتين:
+      1) تحذير مبكر (early): تجميع حيتان ضخم + ضغط شراء عالي + جدار شراء + فوليم بيتراكم
+      2) تأكيد الانفجار (ignition): حركة سعرية قوية (+3%) مع فوليم انفجاري (5x)
+
+    Returns: {"score":0-100, "stage": "none/early/ignition", "label", "signals":{}}
+    """
+    score = 0
+    sig = {}
+
+    # ───── 1) تجميع الحيتان الضخم (30) ─────
+    whale_pts = 0
+    if trades and len(trades) >= 30:
+        ts = sorted(trades, key=lambda x: x["ts"])
+        qtys = [t["qty"] for t in ts if t["qty"] > 0]
+        if qtys:
+            avg_q = sum(qtys) / len(qtys)
+            recent = ts[-40:]
+            big_buys  = [t for t in recent if t["side"] == "buy"  and t["qty"] >= avg_q * 8]
+            big_sells = [t for t in recent if t["side"] == "sell" and t["qty"] >= avg_q * 8]
+            n = len(big_buys)
+            sig["whales"] = n
+            if n >= BIGPUMP_WHALE_MIN and len(big_buys) > len(big_sells) * 1.5:
+                whale_pts = 30
+            elif n >= 2 and len(big_buys) > len(big_sells):
+                whale_pts = 18
+            elif n >= 1:
+                whale_pts = 8
+    score += whale_pts
+
+    # ───── 2) ضغط الشراء العالي (25) ─────
+    buy_pts = 0
+    if trades and len(trades) >= 20:
+        bv = sum(t["qty"]*t["price"] for t in trades if t["side"]=="buy" and t["price"]>0)
+        tv = sum(t["qty"]*t["price"] for t in trades if t["price"]>0)
+        if tv > 0:
+            bp = bv / tv
+            sig["buy_pressure"] = round(bp*100)
+            if bp >= BIGPUMP_BUY_PRESSURE:
+                buy_pts = 25
+            elif bp >= 0.62:
+                buy_pts = 15
+            elif bp >= 0.55:
+                buy_pts = 7
+    score += buy_pts
+
+    # ───── 3) جدار الشراء الضخم (20) ─────
+    wall_pts = 0
+    if ob and ob.get("bids") and ob.get("asks") and current_price > 0:
+        p_lo = current_price * 0.95
+        bid_vol = sum(q for p, q in ob["bids"] if p >= p_lo)
+        ask_vol = sum(q for p, q in ob["asks"] if p <= current_price * 1.05)
+        if ask_vol > 0:
+            wr = bid_vol / ask_vol
+            sig["wall_ratio"] = round(wr, 1)
+            if wr >= BIGPUMP_OB_RATIO:
+                wall_pts = 20
+            elif wr >= 2.0:
+                wall_pts = 12
+            elif wr >= 1.5:
+                wall_pts = 5
+    score += wall_pts
+
+    # ───── 4) تراكم الفوليم (25) ─────
+    vol_pts = 0
+    vsurge = 0
+    if candles_15m and len(candles_15m) >= 8:
+        vols = [c["volume"] for c in candles_15m]
+        baseline = sum(vols[-8:-1]) / 7 if len(vols) >= 8 else 0
+        curr = vols[-1]
+        if baseline > 0:
+            vsurge = curr / baseline
+            sig["vol_surge"] = round(vsurge, 1)
+            if vsurge >= BIGPUMP_VOL_SURGE_X:
+                vol_pts = 25
+            elif vsurge >= 2.0:
+                vol_pts = 15
+            elif vsurge >= 1.5:
+                vol_pts = 7
+    score += vol_pts
+
+    score = min(100, score)
+
+    # ───── كشف الإشعال (ignition): حركة سعرية قوية الآن ─────
+    ignition = False
+    price_move = 0
+    if candles_15m and len(candles_15m) >= 2:
+        last = candles_15m[-1]
+        if last["open"] > 0:
+            price_move = (last["close"] - last["open"]) / last["open"] * 100
+            sig["price_move"] = round(price_move, 1)
+            if price_move >= BIGPUMP_IGNITION_PCT and vsurge >= BIGPUMP_IGNITION_VOL_X:
+                ignition = True
+
+    # ───── التصنيف ─────
+    if ignition and score >= BIGPUMP_EARLY_THRESHOLD:
+        stage = "ignition"
+        label = f"💥🔥 انفجار بدأ الآن! (+{price_move:.1f}% | فوليم {vsurge:.0f}x | درجة {score})"
+    elif score >= BIGPUMP_IGNITION_THRESHOLD:
+        stage = "ignition"
+        label = f"💥 بامب كبير وشيك جداً (درجة {score}/100)"
+    elif score >= BIGPUMP_EARLY_THRESHOLD:
+        stage = "early"
+        label = f"⚡ تحذير مبكر: تجميع لبامب كبير (درجة {score}/100)"
+    else:
+        stage = "none"
+        label = f"لا مؤشرات بامب كبير ({score}/100)"
+
+    return {"score": score, "stage": stage, "label": label, "signals": sig}
+
+
 def eval_prepump_detector(trades, ob, candles_15m, current_price, volume_24h):
     """
     🔮 Pre-Pump Detector (v11) — يرصد علامات الصعود قبل ما يحصل.
@@ -1451,7 +1582,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "stop_loss": current_price*0.97, "target": current_price*1.08,
             "breakeven": current_price*1.04,
             "rr_ratio": 1.0, "atr_pct": 3.0, "trail_pct": 2.0,
-            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}},
+            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}}, "bigpump": {"score": 0, "stage": "none", "label": "", "signals": {}},
             "confirmed": False, "confirm_reason": "wash",
             "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
                 ["funding_rate","cvd_divergence","taker_buy_ratio","ob_imbalance",
@@ -1526,6 +1657,9 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     # 🔮 Pre-Pump Detector — رصد الصعود قبل حدوثه
     prepump = eval_prepump_detector(trades, ob, kl15m, current_price, volume_24h)
 
+    # 💥 Big Pump Detector — رصد البامبات الكبيرة (+15%)
+    bigpump = eval_big_pump_detector(trades, ob, kl15m, current_price, volume_24h)
+
     # تأكيد إلزامي للفوليم/الشراء
     vol_confirmed, vol_reason = has_strong_confirmation(trades, kl15m)
     # التأكيد الأخير: السعر فوق VWAP
@@ -1560,6 +1694,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "trail_pct":  targets.get("trail_pct", 2.0),
         "sr_based":   targets.get("sr_based", False),
         "prepump":    prepump,
+        "bigpump":    bigpump,
         "confirmed":  confirmed,
         "confirm_reason": confirm_reason,
         "conditions": {
@@ -1814,6 +1949,15 @@ def format_pump_signal_message(result):
     else:
         vol_cmc_str = ""
 
+    # سطر Big Pump Detector
+    bigpump = result.get("bigpump", {"score": 0, "stage": "none", "label": "", "signals": {}})
+    if bigpump["stage"] == "ignition":
+        bigpump_line = f"💥 *بامب كبير:* {e(bigpump['label'])}"
+    elif bigpump["stage"] == "early":
+        bigpump_line = f"⚡ *تحذير بامب كبير:* درجة {bigpump['score']}/100"
+    else:
+        bigpump_line = None
+
     # سطر Pre-Pump Detector
     prepump_str = ""
     if prepump["score"] >= PREPUMP_STRONG_THRESHOLD:
@@ -1827,6 +1971,7 @@ def format_pump_signal_message(result):
         f"⭐ *الأساسية:* {result['core_passed']}/4",
         f"🎯 *القوة:* {e(result['strength_label'])}",
         f"🔮 *Pre\\-Pump:* {prepump['score']}/100",
+        bigpump_line,
         f"✅ *تأكيد:* {e(result.get('confirm_reason', '—'))}",
         vol_cmc_str,
         "",
@@ -1880,6 +2025,21 @@ def format_pump_signal_message(result):
             detail_lines.append(f"  📊 انفجار فوليم: {e(str(pp_sig['vol_surge']))}x")
         if "buy_accel" in pp_sig:
             detail_lines.append(f"  ⚡ تسارع شراء: {e(str(pp_sig['buy_accel']))}")
+    # تفاصيل Big Pump Detector
+    bp_sig = bigpump.get("signals", {})
+    if bigpump.get("stage") in ("early", "ignition") and bp_sig:
+        detail_lines.append("")
+        detail_lines.append(f"💥 Big Pump \\({bigpump['score']}/100\\):")
+        if "whales" in bp_sig:
+            detail_lines.append(f"  🐋 حيتان ضخمة: {bp_sig['whales']}")
+        if "buy_pressure" in bp_sig:
+            detail_lines.append(f"  ⚖️ ضغط شراء: {bp_sig['buy_pressure']}%")
+        if "wall_ratio" in bp_sig:
+            detail_lines.append(f"  🧱 جدار شراء: {e(str(bp_sig['wall_ratio']))}x")
+        if "vol_surge" in bp_sig:
+            detail_lines.append(f"  📊 فوليم: {e(str(bp_sig['vol_surge']))}x")
+        if "price_move" in bp_sig:
+            detail_lines.append(f"  📈 حركة السعر: {e(str(bp_sig['price_move']))}%")
     detail_text = "\n".join(detail_lines)
     # نلف الجزء كله في spoiler واحد
     spoiler_block = f"👁 *اضغط لإظهار التفاصيل:*\n||{detail_text}||"
@@ -2616,7 +2776,11 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"   • {STRICT_MIN_CORE}/4 أساسية + Pre-Pump >= {STRICT_MIN_PREPUMP}\n"
         f"   • تأكيد فوليم/شراء + فوق VWAP\n"
         f"   • فوليم Gate >= ${MIN_VOL_FOR_SIGNAL/1_000:.0f}K\n"
-        f"   • فوليم إجمالي >= ${STRICT_MIN_TOTAL_VOL/1_000_000:.0f}M"
+        f"   • فوليم إجمالي >= ${STRICT_MIN_TOTAL_VOL/1_000_000:.0f}M\n"
+        f"💥 نظام الانفجارات الكبيرة: {'نشط ✅' if BIGPUMP_ENABLED else 'متوقف'}\n"
+        f"   • تحذير مبكر (درجة >= {BIGPUMP_EARLY_THRESHOLD})\n"
+        f"   • تأكيد انفجار (+{BIGPUMP_IGNITION_PCT}% مع فوليم {BIGPUMP_IGNITION_VOL_X:.0f}x)\n"
+        f"   • الهدف: بامب +{BIGPUMP_TARGET_PCT:.0f}%+"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
