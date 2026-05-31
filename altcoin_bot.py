@@ -22,10 +22,10 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 # ==================== الاعدادات ====================
 TELEGRAM_TOKEN = "8608851079:AAErIr1R1l7zl4odFE1AH8uUUOHQjxiwYwI"
-ADMIN_CHAT_ID  = "691415765"
-CMC_API_KEY    = "0b745907ec3e4c7d979124ca69dab35"
+ADMIN_CHAT_ID  = "6914157653"
+CMC_API_KEY    = "0b745907ec3e4c7d979124ca69dab335"
 
-CMC_LIMIT             = 1500
+CMC_LIMIT             = 1000
 
 # ==================== فلتر البيتكوين ====================
 BTC_FILTER_ENABLED    = True
@@ -193,7 +193,7 @@ STRICT_MODE              = True      # وضع الدقة العالية
 STRICT_MIN_CORE          = 3         # 3/4 أساسية على الأقل
 STRICT_MIN_PREPUMP       = 0         # Pre-Pump مش إلزامي (للعلم بس)
 STRICT_SPREAD_REQUIRED   = True      # رفض لو spread واسع
-STRICT_MIN_TOTAL_VOL     = 5_000_000 # الفوليم الإجمالي CMC >= $5M (الشرط الأساسي)
+STRICT_MIN_TOTAL_VOL     = 2_000_000 # الفوليم الإجمالي CMC >= $2M (متوازن)
 
 # ═══════════ نظام الانفجارات الكبيرة (Big Pump Detector) ═══════════
 # يرصد العملات المرشحة لبامب كبير (+15%) عبر مرحلتين:
@@ -212,6 +212,18 @@ BIGPUMP_IGNITION_VOL_X   = 5.0       # مع فوليم 5x المتوسط
 # --- الدرجة ---
 BIGPUMP_EARLY_THRESHOLD  = 70        # درجة >= 70 = تحذير مبكر
 BIGPUMP_IGNITION_THRESHOLD = 85      # درجة >= 85 = انفجار وشيك جداً
+
+# ═══════════ Momentum Ignition Detector (قسم منفصل — دقة عالية جداً) ═══════════
+MIGNITE_ENABLED          = True
+MIGNITE_PRICE_ACCEL      = 2.0       # شمعة 5m >= +2%
+MIGNITE_RANGE_EXPAND     = 1.8       # مدى الشمعة >= 1.8x المتوسط
+MIGNITE_VOL_EXPLOSION    = 4.0       # فوليم 5m >= 4x المتوسط
+MIGNITE_BUY_DOMINANCE    = 0.70      # >= 70% شراء
+MIGNITE_ASK_ABSORPTION   = 2.5       # ابتلاع: bids/asks >= 2.5x
+MIGNITE_OI_JUMP          = 0.05      # OI قفز >= 5%
+MIGNITE_FUNDING_OK       = 0.0005    # funding مش overheated
+MIGNITE_MIN_AXES         = 3         # 3/3 محاور (صارم)
+MIGNITE_COOLDOWN_MIN     = 240       # ساعتين بين إشارات نفس العملة
 PUMP_EARLY_SURGE_MIN_X   = 2.0       # فوليم أول شمعة 15m >= 2x متوسط الـ 7 شموع قبلها
 
 # ───── 🔮 Pre-Pump Detector (v11) — رصد الصعود قبل حدوثه ─────
@@ -249,6 +261,12 @@ previous_signals: dict = {}
 seen_coins:       dict = {}
 seen_signals:     dict = {}
 btc_crashed:      bool = False   # حالة إيقاف الفحص بسبب Crash
+
+# ═══════════ CMC Cache — توفير الـ credits ═══════════
+# نجيب CMC مرة كل ساعة بس ونخزّنها (بدل كل دورة)
+cmc_cache:        dict = {}      # {symbol_upper: {volume_24h, name, tags}}
+cmc_cache_time:   datetime = None
+CMC_CACHE_HOURS:  float = 0.75   # نحدّث الكاش كل 45 دقيقة
 
 # ==================== ✅ منع الإرسال المزدوج ====================
 job_locks = {
@@ -397,6 +415,33 @@ async def fetch_cmc_quote(session, symbol):
     except Exception as e:
         logger.error(f"CMC quote error ({symbol}): {e}")
         return None
+
+
+
+
+async def get_cmc_data(session):
+    """
+    يرجّع بيانات CMC من الكاش. يحدّث الكاش مرة كل ساعة فقط.
+    ده بيوفر ~97% من استهلاك credits (بدل ما نجيب كل دورة).
+    Returns: dict {symbol_upper: cmc_coin_data}
+    """
+    global cmc_cache, cmc_cache_time
+    now = datetime.now()
+    # هل الكاش لسه صالح؟
+    if cmc_cache_time is not None:
+        elapsed_h = (now - cmc_cache_time).total_seconds() / 3600
+        if elapsed_h < CMC_CACHE_HOURS and cmc_cache:
+            return cmc_cache
+    # تحديث الكاش
+    try:
+        cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
+        if cmc_raw:
+            cmc_cache = {c.get("symbol", "").upper(): c for c in cmc_raw}
+            cmc_cache_time = now
+            logger.info(f"💾 تحديث CMC cache: {len(cmc_cache)} عملة (المرة الجاية بعد ساعة)")
+    except Exception as e:
+        logger.warning(f"فشل تحديث CMC cache: {e} — نستخدم القديم")
+    return cmc_cache
 
 
 # ==================== ✅ v4.1 — Gate.io: كل العملات ====================
@@ -1288,6 +1333,97 @@ def eval_sustained_buy_pressure(candles_1h):
     }
 
 
+def eval_momentum_ignition(trades, ob, candles_5m, candles_1h, oi_hist, funding, current_price):
+    """
+    🔥 Momentum Ignition Detector — قسم منفصل، دقة عالية جداً.
+    إجماع صارم بين 3 محاور مستقلة — كلها لازم تتفق = انفجار مؤكد.
+      المحور 1 (الزخم): تسارع سعري + توسّع المدى
+      المحور 2 (السيولة): انفجار فوليم + هيمنة شراء + ابتلاع أوامر البيع
+      المحور 3 (العقود): قفزة OI + funding مش overheated
+    Returns: {"fire": bool, "axes": int, "score": 0-100, "label", "details": {}}
+    """
+    axes = 0
+    details = {}
+    score = 0
+
+    # ───── المحور 1: الزخم اللحظي (5m) ─────
+    axis1 = False
+    if candles_5m and len(candles_5m) >= 8:
+        last = candles_5m[-1]
+        if last["open"] > 0:
+            price_accel = (last["close"] - last["open"]) / last["open"] * 100
+            # متوسط مدى آخر 7 شموع
+            ranges = [(c["high"]-c["low"]) for c in candles_5m[-8:-1]]
+            avg_range = sum(ranges)/len(ranges) if ranges else 0
+            cur_range = last["high"] - last["low"]
+            range_x = (cur_range/avg_range) if avg_range > 0 else 0
+            details["price_accel"] = round(price_accel, 2)
+            details["range_x"] = round(range_x, 1)
+            if price_accel >= MIGNITE_PRICE_ACCEL and range_x >= MIGNITE_RANGE_EXPAND:
+                axis1 = True
+                score += 35
+            elif price_accel >= MIGNITE_PRICE_ACCEL * 0.6:
+                score += 15
+    if axis1: axes += 1
+
+    # ───── المحور 2: السيولة ─────
+    axis2 = False
+    vol_x = 0; buy_dom = 0; absorption = 0
+    if candles_5m and len(candles_5m) >= 8:
+        vols = [c["volume"] for c in candles_5m]
+        base = sum(vols[-8:-1])/7 if len(vols) >= 8 else 0
+        vol_x = (vols[-1]/base) if base > 0 else 0
+        details["vol_x"] = round(vol_x, 1)
+    if trades and len(trades) >= 20:
+        bv = sum(t["qty"]*t["price"] for t in trades if t["side"]=="buy" and t["price"]>0)
+        tv = sum(t["qty"]*t["price"] for t in trades if t["price"]>0)
+        buy_dom = (bv/tv) if tv > 0 else 0
+        details["buy_dom"] = round(buy_dom*100)
+    if ob and ob.get("bids") and ob.get("asks") and current_price > 0:
+        bid_v = sum(q for p,q in ob["bids"] if p >= current_price*0.97)
+        ask_v = sum(q for p,q in ob["asks"] if p <= current_price*1.03)
+        absorption = (bid_v/ask_v) if ask_v > 0 else 0
+        details["absorption"] = round(absorption, 1)
+    liq_hits = sum([vol_x >= MIGNITE_VOL_EXPLOSION,
+                    buy_dom >= MIGNITE_BUY_DOMINANCE,
+                    absorption >= MIGNITE_ASK_ABSORPTION])
+    if liq_hits >= 2:
+        axis2 = True
+        score += 35
+    elif liq_hits >= 1:
+        score += 15
+    if axis2: axes += 1
+
+    # ───── المحور 3: العقود الآجلة ─────
+    axis3 = False
+    oi_jump = 0
+    if oi_hist and len(oi_hist) >= 2:
+        oi_now = oi_hist[-1]["oi"]
+        oi_old = oi_hist[max(0, len(oi_hist)-2)]["oi"]
+        if oi_old > 0:
+            oi_jump = (oi_now - oi_old) / oi_old
+            details["oi_jump"] = round(oi_jump*100, 1)
+    funding_ok = (funding is None) or (funding < MIGNITE_FUNDING_OK)
+    if oi_jump >= MIGNITE_OI_JUMP and funding_ok:
+        axis3 = True
+        score += 30
+    elif oi_jump >= MIGNITE_OI_JUMP * 0.5:
+        score += 12
+    if axis3: axes += 1
+
+    score = min(100, score)
+    fire = axes >= MIGNITE_MIN_AXES
+
+    if fire:
+        label = f"🔥💥 IGNITION! {axes}/3 محاور متفقة (درجة {score})"
+    elif axes == 2:
+        label = f"⚡ قريب: {axes}/3 محاور (درجة {score})"
+    else:
+        label = f"لا إشعال ({axes}/3 محاور، درجة {score})"
+
+    return {"fire": fire, "axes": axes, "score": score, "label": label, "details": details}
+
+
 def eval_big_pump_detector(trades, ob, candles_15m, current_price, volume_24h):
     """
     💥 Big Pump Detector — يرصد العملات المرشحة لبامب كبير (+15%+).
@@ -1550,13 +1686,14 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     v10 — يقيم الـ 12 شرط + 5 فلاتر دقة على عملة واحدة
     """
     # جلب البيانات بالتوازي (أضفنا EMA50/4h)
-    funding, trades, ob, kl1h, kl15m, kl4h, oi_hist, above_ema50 = await asyncio.gather(
+    funding, trades, ob, kl1h, kl15m, kl4h, kl5m, oi_hist, above_ema50 = await asyncio.gather(
         fetch_gate_funding_rate(session, symbol),
         fetch_gate_recent_trades(session, symbol, limit=1000),
         fetch_gate_orderbook(session, symbol, limit=50),
         fetch_klines(session, symbol, interval="1h", limit=72),
         fetch_klines(session, symbol, interval="15m", limit=12),
         fetch_klines(session, symbol, interval="4h", limit=60),
+        fetch_klines(session, symbol, interval="5m", limit=12),
         fetch_gate_open_interest(session, symbol),
         fetch_ema50_4h(session, symbol),
         return_exceptions=True
@@ -1567,6 +1704,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     if isinstance(kl1h, Exception):       kl1h       = []
     if isinstance(kl15m, Exception):      kl15m      = []
     if isinstance(kl4h, Exception):       kl4h       = []
+    if isinstance(kl5m, Exception):       kl5m       = []
     if isinstance(oi_hist, Exception):    oi_hist    = []
     if isinstance(above_ema50, Exception): above_ema50 = (True, 0.0)
 
@@ -1582,7 +1720,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "stop_loss": current_price*0.97, "target": current_price*1.08,
             "breakeven": current_price*1.04,
             "rr_ratio": 1.0, "atr_pct": 3.0, "trail_pct": 2.0,
-            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}}, "bigpump": {"score": 0, "stage": "none", "label": "", "signals": {}},
+            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}}, "bigpump": {"score": 0, "stage": "none", "label": "", "signals": {}}, "ignition": {"fire": False, "axes": 0, "score": 0, "label": "", "details": {}},
             "confirmed": False, "confirm_reason": "wash",
             "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
                 ["funding_rate","cvd_divergence","taker_buy_ratio","ob_imbalance",
@@ -1660,6 +1798,9 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     # 💥 Big Pump Detector — رصد البامبات الكبيرة (+15%)
     bigpump = eval_big_pump_detector(trades, ob, kl15m, current_price, volume_24h)
 
+    # 🔥 Momentum Ignition Detector — قسم منفصل، إجماع صارم (دقة عالية جداً)
+    ignition = eval_momentum_ignition(trades, ob, kl5m, kl1h, oi_hist, funding, current_price)
+
     # تأكيد إلزامي للفوليم/الشراء
     vol_confirmed, vol_reason = has_strong_confirmation(trades, kl15m)
     # التأكيد الأخير: السعر فوق VWAP
@@ -1695,6 +1836,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "sr_based":   targets.get("sr_based", False),
         "prepump":    prepump,
         "bigpump":    bigpump,
+        "ignition":   ignition,
         "confirmed":  confirmed,
         "confirm_reason": confirm_reason,
         "conditions": {
@@ -2106,20 +2248,17 @@ async def check_signals(bot: Bot, target_chat: int = None):
         candidates = prescan_filter(raw_coins)
         candidates = candidates[:GATE_MAX_CANDIDATES]
 
-        # إثراء من CMC للحصول على الاسم الكامل والـ tags وإجمالي فوليم كل المنصات
+        # إثراء من CMC (من الكاش — يتحدّث كل ساعة بس لتوفير credits)
         try:
-            cmc_raw = await fetch_cmc(session, limit=CMC_LIMIT)
-            cmc_by_sym = {c.get("symbol", "").upper(): c for c in (cmc_raw or [])}
+            cmc_by_sym = await get_cmc_data(session)
             for d in candidates:
                 cmc = cmc_by_sym.get(d["symbol"].upper())
                 if cmc:
                     d["name"] = cmc.get("name", d.get("name", ""))
                     d["tags"] = cmc.get("tags", [])
-                    # إجمالي فوليم عبر كل المنصات من CMC
                     quote = cmc.get("quote", {}).get("USD", {})
                     d["volume_cmc_total"] = float(quote.get("volume_24h", 0) or 0)
                 else:
-                    # العملة مش في الـ top CMC — نعلّمها لجلب فوليمها مباشرة لاحقاً
                     d["volume_cmc_total"] = 0
         except Exception as e:
             logger.warning(f"إثراء CMC فشل: {e} — نكمل بالأسماء من Gate فقط")
@@ -2208,26 +2347,15 @@ async def check_signals(bot: Bot, target_chat: int = None):
     # المرشحين الأوليين (قبل فلتر الفوليم الإجمالي)
     candidates_sig = [r for r in all_results if passes_strict(r)]
 
-    # نجيب الفوليم الإجمالي من CMC للمرشحين ونطبّق شرط الـ $5M
+    # شرط الفوليم الإجمالي >= $2M — من الكاش فقط (بدون استهلاك credits إضافية)
+    # ملاحظة: العملات خارج top-1000 CMC غالباً فوليمها الإجمالي صغير، فترفض بأمان
     main_signals = []
-    if candidates_sig:
-        async with aiohttp.ClientSession() as vol_session:
-            for r in candidates_sig:
-                tv = r.get("volume_cmc_total", 0)
-                if tv <= 0:
-                    # نجيبه مباشرة من CMC
-                    try:
-                        q = await fetch_cmc_quote(vol_session, r["symbol"])
-                        if q:
-                            tv = q.get("volume_24h", 0)
-                            r["volume_cmc_total"] = tv
-                    except Exception:
-                        tv = 0
-                # شرط إلزامي: الفوليم الإجمالي >= $5M
-                if tv >= STRICT_MIN_TOTAL_VOL:
-                    main_signals.append(r)
-                else:
-                    logger.info(f"تخطي {r['symbol']} — فوليم إجمالي ${tv/1e6:.1f}M < ${STRICT_MIN_TOTAL_VOL/1e6:.0f}M")
+    for r in candidates_sig:
+        tv = r.get("volume_cmc_total", 0)
+        if tv >= STRICT_MIN_TOTAL_VOL:
+            main_signals.append(r)
+        else:
+            logger.info(f"تخطي {r['symbol']} — فوليم إجمالي ${tv/1e6:.1f}M < ${STRICT_MIN_TOTAL_VOL/1e6:.0f}M")
 
     # ✅ v6.4 — diagnostic: نعرض كم عملة وصلت لكل مستوى
     strong_count   = sum(1 for r in all_results if r["strength"] == "STRONG")
@@ -2286,14 +2414,6 @@ async def check_signals(bot: Bot, target_chat: int = None):
 
     for r in fresh_main:
         try:
-            # لو الفوليم الإجمالي مش متاح (العملة خارج top CMC) نجيبه مباشرة
-            if not r.get("volume_cmc_total", 0):
-                try:
-                    q = await fetch_cmc_quote(session, r["symbol"])
-                    if q and q.get("volume_24h", 0) > 0:
-                        r["volume_cmc_total"] = q["volume_24h"]
-                except Exception:
-                    pass
             r["btc_warning"] = btc_warn_text
             r["btc_status_full"] = btc_info if btc_info else None
             msg = format_pump_signal_message(r)
@@ -2310,6 +2430,72 @@ async def check_signals(bot: Bot, target_chat: int = None):
     logger.info(f"📤 تم إرسال {sent_count} إشارة")
     previous_signals = {r["symbol"]: r for r in fresh_main}
     save_seen_signals()   # ✅ v6.4 — حفظ بعد كل دفعة إشارات
+
+    # ════════════ 🔥 قسم الانفجارات المنفصل (Momentum Ignition) ════════════
+    # يشتغل مستقل عن الإشارات العادية — يرصد الانفجارات بإجماع صارم 3/3 محاور
+    if MIGNITE_ENABLED:
+        ignition_hits = [r for r in all_results
+                         if r.get("ignition", {}).get("fire", False)
+                         and r.get("volume_cmc_total", 0) >= STRICT_MIN_TOTAL_VOL]
+        # ترتيب بالدرجة
+        ignition_hits.sort(key=lambda x: x["ignition"]["score"], reverse=True)
+        for r in ignition_hits:
+            sym = r["symbol"]
+            # cooldown خاص بالانفجارات
+            key = f"IGNITE_{sym}"
+            if key in seen_signals:
+                last_t = seen_signals[key]
+                last_t = last_t[0] if isinstance(last_t, tuple) else last_t
+                if isinstance(last_t, datetime):
+                    if (datetime.now() - last_t).total_seconds() < MIGNITE_COOLDOWN_MIN * 60:
+                        continue
+            try:
+                ig = r["ignition"]
+                d = ig["details"]
+                price = r["price"]
+                tgt = r.get("target", price * 1.15)
+                sl = r.get("stop_loss", price * 0.95)
+                e = _md2_escape
+                def fv(v):
+                    if v >= 1_000_000_000: return f"${v/1_000_000_000:.1f}B"
+                    if v >= 1_000_000: return f"${v/1_000_000:.1f}M"
+                    return f"${v/1_000:.0f}K"
+                lines = [
+                    "🔥💥 *MOMENTUM IGNITION* 💥🔥",
+                    f"⚡ *{e(sym)}/USDT* — انفجار مؤكد",
+                    f"💰 Price: `{e(fmt_price(price))}`",
+                    f"🎯 *{ig['axes']}/3 محاور متفقة* \\| درجة {ig['score']}/100",
+                    f"📊 Vol: `{e(fv(r.get('volume_cmc_total',0)))}`",
+                    "",
+                    "*المحاور:*",
+                ]
+                if "price_accel" in d:
+                    lines.append(f"📈 تسارع سعري: {e(str(d['price_accel']))}% \\(مدى {e(str(d.get('range_x','?')))}x\\)")
+                if "vol_x" in d:
+                    lines.append(f"💧 انفجار فوليم: {e(str(d['vol_x']))}x")
+                if "buy_dom" in d:
+                    lines.append(f"🟢 هيمنة شراء: {d['buy_dom']}%")
+                if "absorption" in d:
+                    lines.append(f"🧱 ابتلاع بيع: {e(str(d['absorption']))}x")
+                if "oi_jump" in d:
+                    lines.append(f"📜 قفزة OI: {e(str(d['oi_jump']))}%")
+                lines += [
+                    "",
+                    f"🎯 TP: `{e(fmt_price(tgt))}`",
+                    f"📉 SL: `{e(fmt_price(sl))}`",
+                    f"⚡ دخول فوري — الانفجار بدأ",
+                ]
+                msg = "\n".join(lines)
+                await bot.send_message(chat_id=chat_target, text=msg,
+                                       parse_mode="MarkdownV2",
+                                       disable_web_page_preview=True)
+                seen_signals[key] = (datetime.now(), ig["score"], "IGNITION", price)
+                logger.info(f"🔥 IGNITION أُرسلت: {sym} ({ig['axes']}/3, درجة {ig['score']})")
+                await asyncio.sleep(0.7)
+            except Exception as ex:
+                logger.error(f"خطأ إرسال ignition {r['symbol']}: {ex}")
+        if ignition_hits:
+            save_seen_signals()
 
 
 # ============================================================
