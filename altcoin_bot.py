@@ -1813,10 +1813,11 @@ def eval_prepump_detector(trades, ob, candles_15m, current_price, volume_24h):
 
 def has_strong_confirmation(trades, candles_15m):
     """
-    تأكيد إلزامي (v11): الإشارة لازم يكون فيها واحد على الأقل من:
+    تأكيد قوي (v11): الإشارة لازم يكون فيها واحد قوي على الأقل من 3:
       1) انفجار فوليم: آخر شمعة 15m فوليمها >= 2x المتوسط
       2) ضغط شراء قوي: >= 62% من فوليم الصفقات شراء
-    لو مفيش أي تأكيد → الإشارة ضعيفة وتترفض.
+      3) تجميع حيتان: صفقات شراء ضخمة متتالية (يمسك الحيتان بدري)
+    أي واحد قوي = تأكيد. ده يمسك الحيتان من تحت بدون ما يخنق الفرص.
     Returns: (confirmed: bool, reason: str)
     """
     # 1) انفجار فوليم
@@ -1839,12 +1840,28 @@ def has_strong_confirmation(trades, candles_15m):
             buy_pct = bv / tv
             buy_ok = buy_pct >= CONFIRM_BUY_PRESSURE
 
-    if vol_ok or buy_ok:
+    # 3) تجميع حيتان (يمسك الحيتان وهم بيجمّعوا تحت — قبل الصعود)
+    whale_ok = False
+    n_whales = 0
+    if trades and len(trades) >= 30:
+        ts = sorted(trades, key=lambda x: x["ts"])
+        qtys = [t["qty"] for t in ts if t["qty"] > 0]
+        if qtys:
+            avg_q = sum(qtys) / len(qtys)
+            recent = ts[-30:]
+            big_buys  = [t for t in recent if t["side"] == "buy"  and t["qty"] >= avg_q * 6]
+            big_sells = [t for t in recent if t["side"] == "sell" and t["qty"] >= avg_q * 6]
+            n_whales = len(big_buys)
+            # تجميع = 3+ صفقات شراء ضخمة وأكتر من البيع الضخم
+            whale_ok = n_whales >= 3 and len(big_buys) > len(big_sells)
+
+    if vol_ok or buy_ok or whale_ok:
         parts = []
+        if whale_ok: parts.append(f"🐋 {n_whales} حيتان")
         if vol_ok: parts.append(f"فوليم {vol_x:.1f}x")
         if buy_ok: parts.append(f"شراء {buy_pct*100:.0f}%")
         return True, " + ".join(parts)
-    return False, f"ضعيف (فوليم {vol_x:.1f}x، شراء {buy_pct*100:.0f}%)"
+    return False, f"ضعيف (فوليم {vol_x:.1f}x، شراء {buy_pct*100:.0f}%، حيتان {n_whales})"
 
 
 async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
