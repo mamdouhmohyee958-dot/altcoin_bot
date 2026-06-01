@@ -213,17 +213,18 @@ BIGPUMP_IGNITION_VOL_X   = 5.0       # مع فوليم 5x المتوسط
 BIGPUMP_EARLY_THRESHOLD  = 70        # درجة >= 70 = تحذير مبكر
 BIGPUMP_IGNITION_THRESHOLD = 85      # درجة >= 85 = انفجار وشيك جداً
 
-# ═══════════ Momentum Ignition Detector (قسم منفصل — دقة عالية جداً) ═══════════
-MIGNITE_ENABLED          = True
-MIGNITE_PRICE_ACCEL      = 2.0       # شمعة 5m >= +2%
-MIGNITE_RANGE_EXPAND     = 1.8       # مدى الشمعة >= 1.8x المتوسط
-MIGNITE_VOL_EXPLOSION    = 4.0       # فوليم 5m >= 4x المتوسط
-MIGNITE_BUY_DOMINANCE    = 0.70      # >= 70% شراء
-MIGNITE_ASK_ABSORPTION   = 2.5       # ابتلاع: bids/asks >= 2.5x
-MIGNITE_OI_JUMP          = 0.05      # OI قفز >= 5%
-MIGNITE_FUNDING_OK       = 0.0005    # funding مش overheated
-MIGNITE_MIN_AXES         = 3         # 3/3 محاور (صارم)
-MIGNITE_COOLDOWN_MIN     = 240       # ساعتين بين إشارات نفس العملة
+# ═══════════ Explosion Detector (نظام منفصل — إجماع 3 محاور) ═══════════
+EXPLOSION_ENABLED        = True
+EXP_MOMENTUM_PRICE_PCT   = 2.5       # السعر +2.5% في آخر شمعة 15m
+EXP_MOMENTUM_ACCEL       = 1.5       # تسارع: الشمعة أكبر من اللي قبلها 1.5x
+EXP_LIQ_VOL_SURGE        = 4.0       # فوليم 4x المتوسط
+EXP_LIQ_BUY_DOMINANCE    = 0.70      # 70%+ شراء
+EXP_LIQ_ASK_EATEN        = 0.6       # 60%+ من جدار البيع اتاكل
+EXP_FUT_OI_JUMP          = 0.08      # OI قفز 8%+
+EXP_FUT_FUNDING_NEG      = 0.0       # Funding سالب
+EXP_MIN_AXES             = 2         # لازم 2 من 3 محاور
+EXP_STRONG_AXES          = 3         # 3/3 = مؤكد
+EXP_COOLDOWN_MIN         = 90        # 90 دقيقة بين إشارات نفس العملة
 PUMP_EARLY_SURGE_MIN_X   = 2.0       # فوليم أول شمعة 15m >= 2x متوسط الـ 7 شموع قبلها
 
 # ───── 🔮 Pre-Pump Detector (v11) — رصد الصعود قبل حدوثه ─────
@@ -279,19 +280,74 @@ last_job_run = {
 # ==================== العملات المحرمة (يدوي) ====================
 # أضف هنا أي عملة تعتبرها محرمة أو مشبوهة
 HARAM_SYMBOLS = {
-    # ميم كوينز / قمار
-    "FARTCOIN",
-    # مشاريع مشبوهة
-    "CTR",     # CTRUSDT
-    "UP",      # UPUSDT
-    "ESPORTS", # ESPORTSUSDT
-    "SLX",     # SLXUSDT
-    "BAS",     # BASUSDT
-    "BEAT",    # BEATUSDT
-    "GENIUS",  # GENIUSUSDT
-    "BTR",     # BTRUSDT
-    "LEO",     # LEOUSDT
-    # أضف هنا ↓
+    # القائمة الأساسية + قائمة المستخدم الموسّعة (عملات يتجنبها)
+    "LEO", "ESPORTS", "GENIUS",
+    "1000CHEMS", "1MBABYDOGE", "2DAI", "A47", "AA", "AAPLX", "ABOND", "ACE", "ACQ", "ACS",
+    "ACX", "AFK", "AGLA", "AGX", "AIBB", "AIC", "AIDOGE", "AIKEK", "AIMBOT", "AIRTOK",
+    "AL16Z", "ALICE", "ALLO", "AMI", "ANC", "ANI", "ANIME", "ANOME", "ANON", "ANTS",
+    "AOG", "AP", "APEX", "APR", "APU", "APX", "AQT", "ARBS", "ARIAIP", "ARIX",
+    "ARK", "ARTX", "ASC", "ASTER", "ASTRA", "ATN", "AVAXAI", "AVICI", "AVL", "AVNT",
+    "AXM", "AXS", "BABY", "BAN", "BANANA", "BANANAS31", "BANK", "BARD", "BAS", "BASED",
+    "BASEX", "BCE", "BDIN", "BEAT", "BEER2", "BERA", "BERRY", "BETH", "BFUSD", "BGSOL",
+    "BIRB", "BIRD", "BISO", "BITMART", "BLIND", "BLM", "BLOCK", "BLUE", "BLUM", "BNC",
+    "BNSOL", "BOB", "BOME", "BONE", "BORING", "BOT", "BPX", "BR", "BRETT", "BROCCOLI",
+    "BROCCOLI714", "BROCK", "BSB", "BSX", "BTG", "BTR", "BTS", "BTW", "BTX", "BUILD",
+    "BULLA", "BUZZ", "CAS", "CAT", "CATTON", "CC", "CDL", "CDT", "CEEK", "CEL",
+    "CETUS", "CFG", "CGN", "CGX", "CHAT", "CHECK", "CHILLGUY", "CHIP", "CKP", "CLH",
+    "CLND", "CLO", "CLOUD", "CMC20", "CO", "COCORO", "CODEX", "COLLECT", "COPYCAT", "COQ",
+    "CORL", "COW", "CR7", "CRCLON", "CREA", "CRP", "CSATAR", "CSKY", "CSWAP", "CTC",
+    "CTR", "CULT", "CYBA", "CYPR", "CZ4", "DAM", "DAO", "DAPP", "DCI", "DCOIN",
+    "DEEP", "DEEPSEEK", "DEFI", "DERI", "DIONE", "DIVI", "DLC", "DNOW", "DOGS", "DOLO",
+    "DONKEY", "DOP", "DORA", "DORKY", "DOSE", "DOUR", "DOWGE", "DRESS", "DRV", "DSLA",
+    "DSP", "DUBB", "DUEL", "DYM", "DYP", "EAVE", "ECHO", "EDEN", "EDGE", "EGP",
+    "EGP1", "ELECTRON", "ELON", "ELON4AFD", "ELX", "EMPIRE", "EMR", "ERG", "ESE", "ETS",
+    "EUL", "EV", "EVAA", "EYWA", "F5", "FAKEAI", "FALCON", "FARTCOIN", "FDUND", "FEAR",
+    "FEG", "FF", "FIGHT", "FINC", "FIRE", "FLEX", "FLOKS", "FLOW", "FLUID", "FLX",
+    "FLZ", "FOGO", "FOMO", "FOREST", "FOUR", "FOX", "FRAG", "FRAX", "FT", "FU",
+    "FXF", "GAME", "GAU", "GEAR", "GEMS", "GEN", "GET", "GF", "GHIBLI", "GHST",
+    "GIGA", "GIGGLE", "GIZA", "GOAT", "GOATED", "GODL", "GODS", "GOLC", "GP", "GPT",
+    "GRIFT", "GROK3", "GT", "GUA", "H1", "HABIBI", "HAEDAL", "HANA", "HANDY", "HBD",
+    "HEGIC", "HEMI", "HENAI", "HERA", "HIFI", "HIPPO", "HIPPOSWAP", "HMSTR", "HODL", "HOME",
+    "HORO", "HOTKEY", "HQ", "HTS", "HUMA", "HUSBY", "HUSTLE", "HYPE", "IDOL", "IN",
+    "INFOFI", "INFRA", "INN", "INTR", "INV", "INX", "IR", "JAGER", "JELLYJELLY", "JITOSOL",
+    "JLP", "JUP", "KARATE", "KAT", "KEERNEL", "KEK", "KEKIUS", "KICKS", "KILO", "KINT",
+    "KISHU", "KMNO", "KOMA", "KWAI", "LAB", "LANLAN", "LAUNCHCOIN", "LAY3R", "LAYER", "LBL",
+    "LEASH", "LEE", "LGNS", "LIF3", "LIGHT", "LILA", "LIT", "LITT", "LIZA", "LNQ",
+    "LOGS", "LON", "LOOT", "LOUD", "LQTY", "LSHARE", "LTD", "LUCE", "LUMA", "LUSH",
+    "LYK", "LYM", "LZZY", "M87", "MAGMA", "MAHA", "MAMO", "MANTRA", "MANYU", "MBD",
+    "MBG", "MCDULL", "MDX", "MEDXT", "MEFA", "MEFAI", "MELANINA", "MELD", "MEME", "MEMEFI",
+    "MEMES", "MESH", "MESO", "MET", "METFI", "METO", "MEV", "MEW", "MEZO", "MFT",
+    "MILK", "MINDFAK", "MIR", "MITO", "ML", "MM", "MMAI", "MMT", "MOCK", "MOG",
+    "MONKY", "MOODENG", "MOONED", "MOOV", "MOR", "MOROS", "MORPHO", "MOTHER", "MOVEZ", "MRLN",
+    "MRX", "MUBARAK", "MUSIC", "MX", "MY", "MYRO", "MYSTERY", "MYX", "NABOX", "NAVX",
+    "NAYM", "NEIRO", "NEOS", "NEURA", "NEURAL", "NEX", "NGL", "NIGELLA", "NIMBUS", "NODEX",
+    "NOM", "NOON", "NORD", "NOT", "NOTAI", "NRWA", "NTRN", "NVDAX", "ODOS", "OGN",
+    "OOE", "OPM", "OPN", "OPTI", "ORACLE", "ORBA", "ORCA", "ORDER", "ORDS", "OVL",
+    "PADO", "PAI", "PAID", "PALAI", "PAW", "PAWS", "PAXE", "PBR", "PBX", "PELL",
+    "PENGU", "PENGUIN", "PEPE", "PICA", "PING", "PINGPONG", "PIPPIN", "PLANCK", "PLNET", "PLS",
+    "PLUME", "PNDR", "PNG", "PNL", "PNUT", "POCAT", "POLK", "POLX", "POLYDOGE", "PONKE",
+    "POR", "PORTALS", "PSTAKE", "PTP", "PUFFER", "PULSE", "PUMP", "PX", "PYR", "PYTHIA",
+    "QSHX", "QUILL", "QUQ", "R2", "RATS", "RAVE", "RAWA", "RDAC", "RDEX", "READY",
+    "REAL", "RECALL", "RED", "RESOLV", "RETARD", "RFC", "RHEA", "RING", "RION", "RIVER",
+    "RLS", "ROG", "ROLL", "ROOPEE", "ROPO", "RPN", "RTX", "RUBYCOIN", "SAI", "SALT",
+    "SALY", "SAMO", "SARA", "SBTC", "SCA", "SCALE", "SDEX", "SEEK", "SEN", "SEND",
+    "SENTIS", "SFI", "SHADOW", "SIGMA", "SIS", "SKI", "SKY", "SLERF", "SLX", "SMILE",
+    "SNEK", "SNL", "SNS", "SOCIAL", "SOLAMA", "SOLO", "SOLV", "SOLX", "SOS", "SPA",
+    "SPC", "SPCX", "SPHR", "SPX", "SQGROW", "SRIFT", "SRM", "SSWP", "STAPUL", "STARTUP",
+    "STEROID", "STO", "STORM", "STP", "STPL", "STRK", "STUPID", "SUIA", "SUNDOG", "SUP",
+    "SUPERFORM", "SUPR", "SWAP", "SWCH", "SWELL", "SYNTH", "SYRUP", "T1", "TAB", "TAKER",
+    "TAOBOT", "TATSU", "TBC", "TBK", "TCOM", "TEA", "TENET", "TERMINUS", "THE", "THOR",
+    "THQ", "THR", "TIDAL", "TITN", "TKT", "TMX", "TOR", "TOSHI", "TOWN", "TRADOOR",
+    "TRAVA", "TRC", "TREE", "TRIA", "TRN", "TROLL", "TRUMP", "TRUST", "TRUU", "TRWA",
+    "TSLAX", "TST", "TUNA", "TURBO", "TURBOS", "TURTLE", "TUT", "UAI", "UB", "UE",
+    "UGOR", "ULX", "UMA", "UP", "UPO", "UPTOP", "URO", "USBT", "USD0", "USD1",
+    "USDS", "USELESS", "USOR", "USUAL", "VEGA", "VELA", "VELAR", "VELO", "VEREM", "VINE",
+    "VISTA", "VLR", "VOOL", "VPAY", "VPS", "VRSW", "VRX", "VTX", "VUZZ", "VVS",
+    "WALI", "WARD", "WEBAI", "WET", "WHITE", "WHITEWHALE", "WIF", "WILD", "WLFI", "WLTH",
+    "WOJAK", "WWY", "XAG", "XLAB", "XMON", "XMW", "XNL", "XNT", "XODEX", "XOXO",
+    "XPIN", "XPRT", "XPX", "XYRO", "YAI", "YBR", "YFDAI", "YND", "YP", "YU",
+    "ZAM", "ZCAD", "ZCN", "ZEAL", "ZEND", "ZENIQ", "ZEPH", "ZERC", "ZEREBRO", "ZEST",
+    "ZEUS", "ZEX", "ZKML", "ZKX", "ZORA",
 }
 
 HARAM_FILE = "haram_symbols.json"
@@ -310,6 +366,8 @@ def normalize_symbol(raw):
     s = "".join(ch for ch in s if ch.isalnum())
     return s.strip()
 
+_DEFAULT_HARAM = set(HARAM_SYMBOLS)  # نسخة احتياطية للدمج
+
 def load_haram_symbols():
     """تحميل العملات المحرمة من الملف ودمجها مع الافتراضية."""
     global HARAM_SYMBOLS
@@ -321,7 +379,7 @@ def load_haram_symbols():
             # تطبيع كل الرموز المحمّلة
             HARAM_SYMBOLS = {normalize_symbol(s) for s in saved if s}
             # نضيف الافتراضية كمان
-            for s in ["FARTCOIN","CTR","UP","ESPORTS","SLX","BAS","BEAT","GENIUS","BTR","LEO"]:
+            for s in _DEFAULT_HARAM:
                 HARAM_SYMBOLS.add(s)
     except Exception:
         pass
@@ -1424,6 +1482,105 @@ def eval_momentum_ignition(trades, ob, candles_5m, candles_1h, oi_hist, funding,
     return {"fire": fire, "axes": axes, "score": score, "label": label, "details": details}
 
 
+def eval_explosion_detector(trades, ob, candles_15m, funding, oi_hist, current_price):
+    """
+    🔥 Explosion Detector — نظام إجماع صارم بين 3 محاور مستقلة.
+    الانفجار الحقيقي بيظهر في التلاتة مع بعض:
+      المحور 1 (زخم): اختراق سعري + تسارع لحظي
+      المحور 2 (سيولة): فوليم انفجاري + هيمنة شراء + ابتلاع جدار البيع
+      المحور 3 (عقود): OI يقفز + Funding سالب (شورتات محاصرة)
+    لازم 2/3 محاور على الأقل. 3/3 = انفجار مؤكد.
+
+    Returns: {"detected": bool, "axes": int, "label", "details": {}, "level": "none/strong/confirmed"}
+    """
+    axes_passed = 0
+    details = {}
+
+    # ═══ المحور 1: الزخم اللحظي ═══
+    momentum_ok = False
+    if candles_15m and len(candles_15m) >= 3:
+        last = candles_15m[-1]
+        prev = candles_15m[-2]
+        if last["open"] > 0:
+            price_move = (last["close"] - last["open"]) / last["open"] * 100
+            # حجم جسم الشمعة الحالية vs السابقة (تسارع)
+            body_now  = abs(last["close"] - last["open"])
+            body_prev = abs(prev["close"] - prev["open"]) or 1e-9
+            accel = body_now / body_prev
+            is_green = last["close"] > last["open"]
+            details["momentum"] = f"+{price_move:.1f}% تسارع {accel:.1f}x"
+            if is_green and price_move >= EXP_MOMENTUM_PRICE_PCT and accel >= EXP_MOMENTUM_ACCEL:
+                momentum_ok = True
+                axes_passed += 1
+
+    # ═══ المحور 2: السيولة ═══
+    liquidity_ok = False
+    liq_signals = 0
+    if trades and len(trades) >= 20 and candles_15m and len(candles_15m) >= 8:
+        # أ) انفجار فوليم
+        vols = [c["volume"] for c in candles_15m]
+        baseline = sum(vols[-8:-1]) / 7 if len(vols) >= 8 else 0
+        vsurge = (vols[-1] / baseline) if baseline > 0 else 0
+        if vsurge >= EXP_LIQ_VOL_SURGE:
+            liq_signals += 1
+        # ب) هيمنة الشراء
+        bv = sum(t["qty"]*t["price"] for t in trades if t["side"]=="buy" and t["price"]>0)
+        tv = sum(t["qty"]*t["price"] for t in trades if t["price"]>0)
+        buy_dom = (bv/tv) if tv > 0 else 0
+        if buy_dom >= EXP_LIQ_BUY_DOMINANCE:
+            liq_signals += 1
+        # ج) ابتلاع جدار البيع (الـ asks القريبة قليلة مقارنة بالـ bids = اتاكلت)
+        ask_eaten = False
+        if ob and ob.get("bids") and ob.get("asks") and current_price > 0:
+            near_asks = sum(q for p, q in ob["asks"] if p <= current_price * 1.02)
+            near_bids = sum(q for p, q in ob["bids"] if p >= current_price * 0.98)
+            if near_bids > 0 and near_asks > 0:
+                if near_bids / near_asks >= (1 / (1 - EXP_LIQ_ASK_EATEN)):
+                    ask_eaten = True
+                    liq_signals += 1
+        details["liquidity"] = f"فوليم {vsurge:.1f}x شراء {buy_dom*100:.0f}%" + (" +ابتلاع" if ask_eaten else "")
+        # المحور يعدّي لو 2 من 3 إشارات سيولة
+        if liq_signals >= 2:
+            liquidity_ok = True
+            axes_passed += 1
+
+    # ═══ المحور 3: العقود الآجلة ═══
+    futures_ok = False
+    if oi_hist and len(oi_hist) >= 2:
+        oi_now = oi_hist[-1]["oi"]
+        oi_old = oi_hist[max(0, len(oi_hist)-2)]["oi"]
+        oi_jump = ((oi_now - oi_old) / oi_old) if oi_old > 0 else 0
+        funding_neg = funding is not None and funding < EXP_FUT_FUNDING_NEG
+        details["futures"] = f"OI {oi_jump*100:+.0f}%" + (" Funding سالب" if funding_neg else "")
+        # المحور يعدّي لو OI قفز + (Funding سالب أو OI قفز كبير جداً)
+        if oi_jump >= EXP_FUT_OI_JUMP and (funding_neg or oi_jump >= EXP_FUT_OI_JUMP * 2):
+            futures_ok = True
+            axes_passed += 1
+
+    # ═══ الإجماع ═══
+    detected = axes_passed >= EXP_MIN_AXES
+    if axes_passed >= EXP_STRONG_AXES:
+        level = "confirmed"
+        label = f"🔥💥 انفجار مؤكد! إجماع {axes_passed}/3 محاور"
+    elif detected:
+        level = "strong"
+        label = f"🔥 انفجار محتمل قوي ({axes_passed}/3 محاور)"
+    else:
+        level = "none"
+        label = f"لا انفجار ({axes_passed}/3 محاور)"
+
+    return {
+        "detected": detected,
+        "axes": axes_passed,
+        "level": level,
+        "label": label,
+        "details": details,
+        "momentum": momentum_ok,
+        "liquidity": liquidity_ok,
+        "futures": futures_ok,
+    }
+
+
 def eval_big_pump_detector(trades, ob, candles_15m, current_price, volume_24h):
     """
     💥 Big Pump Detector — يرصد العملات المرشحة لبامب كبير (+15%+).
@@ -1720,7 +1877,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
             "stop_loss": current_price*0.97, "target": current_price*1.08,
             "breakeven": current_price*1.04,
             "rr_ratio": 1.0, "atr_pct": 3.0, "trail_pct": 2.0,
-            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}}, "bigpump": {"score": 0, "stage": "none", "label": "", "signals": {}}, "ignition": {"fire": False, "axes": 0, "score": 0, "label": "", "details": {}},
+            "sr_based": False, "prepump": {"score": 0, "label": "", "signals": {}}, "bigpump": {"score": 0, "stage": "none", "label": "", "signals": {}}, "explosion": {"detected": False, "axes": 0, "level": "none", "label": "", "details": {}}, "ignition": {"fire": False, "axes": 0, "score": 0, "label": "", "details": {}},
             "confirmed": False, "confirm_reason": "wash",
             "conditions": {k: {"pass": False, "score": 0, "value": 0, "label": "wash"} for k in
                 ["funding_rate","cvd_divergence","taker_buy_ratio","ob_imbalance",
@@ -1798,6 +1955,9 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
     # 💥 Big Pump Detector — رصد البامبات الكبيرة (+15%)
     bigpump = eval_big_pump_detector(trades, ob, kl15m, current_price, volume_24h)
 
+    # 🔥 Explosion Detector — نظام إجماع 3 محاور (منفصل، دقيق جداً)
+    explosion = eval_explosion_detector(trades, ob, kl15m, funding, oi_hist, current_price)
+
     # 🔥 Momentum Ignition Detector — قسم منفصل، إجماع صارم (دقة عالية جداً)
     ignition = eval_momentum_ignition(trades, ob, kl5m, kl1h, oi_hist, funding, current_price)
 
@@ -1836,6 +1996,7 @@ async def evaluate_pump_signal(session, symbol, current_price, volume_24h=0):
         "sr_based":   targets.get("sr_based", False),
         "prepump":    prepump,
         "bigpump":    bigpump,
+        "explosion":  explosion,
         "ignition":   ignition,
         "confirmed":  confirmed,
         "confirm_reason": confirm_reason,
@@ -2049,6 +2210,7 @@ def format_pump_signal_message(result):
     total_vol = result.get("volume_cmc_total", 0)
     prepump = result.get("prepump", {"score": 0})
     bigpump = result.get("bigpump", {"score": 0, "stage": "none", "label": ""})
+    explosion = result.get("explosion", {"detected": False, "axes": 0, "level": "none", "label": ""})
 
     # نوع الإشارة
     strength = result.get("strength") or "SIGNAL"
@@ -2068,6 +2230,10 @@ def format_pump_signal_message(result):
     ]
 
     # سطر البامب الكبير (لو موجود)
+    if explosion.get("level") == "confirmed":
+        lines.append(f"🔥 *EXPLOSION:* {e(explosion.get('label',''))}")
+    elif explosion.get("level") == "strong":
+        lines.append(f"🔥 *Explosion:* {e(explosion.get('label',''))}")
     if bigpump.get("stage") == "ignition":
         lines.append(f"💥 *BIG PUMP:* {e(bigpump.get('label',''))}")
     elif bigpump.get("stage") == "early":
@@ -2104,6 +2270,17 @@ def format_pump_signal_message(result):
         lbl = e(r.get("label", ""))
         star = f"{marker} " if marker else ""
         detail.append(f"{icon} {star}{name}: {lbl}")
+    # تفاصيل Explosion Detector
+    exp_d = explosion.get("details", {})
+    if explosion.get("level") in ("strong", "confirmed") and exp_d:
+        detail.append("")
+        detail.append(f"🔥 Explosion {explosion['axes']}/3:")
+        if "momentum" in exp_d:
+            detail.append(f"  ⚡ زخم: {e(str(exp_d['momentum']))}")
+        if "liquidity" in exp_d:
+            detail.append(f"  💧 سيولة: {e(str(exp_d['liquidity']))}")
+        if "futures" in exp_d:
+            detail.append(f"  📑 عقود: {e(str(exp_d['futures']))}")
     detail.append("⭐ \\= core")
     detail_text = chr(10).join(detail)
     lines.append("👁 *Tap for details:*" + chr(10) + "||" + detail_text + "||")
@@ -2884,7 +3061,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💥 نظام الانفجارات الكبيرة: {'نشط ✅' if BIGPUMP_ENABLED else 'متوقف'}\n"
         f"   • تحذير مبكر (درجة >= {BIGPUMP_EARLY_THRESHOLD})\n"
         f"   • تأكيد انفجار (+{BIGPUMP_IGNITION_PCT}% مع فوليم {BIGPUMP_IGNITION_VOL_X:.0f}x)\n"
-        f"   • الهدف: بامب +{BIGPUMP_TARGET_PCT:.0f}%+"
+        f"   • الهدف: بامب +{BIGPUMP_TARGET_PCT:.0f}%+\n"
+        f"🔥 نظام الانفجارات (إجماع 3 محاور): {'نشط ✅' if EXPLOSION_ENABLED else 'متوقف'}\n"
+        f"   • زخم + سيولة + عقود آجلة\n"
+        f"   • لازم {EXP_MIN_AXES}/3 محاور (3/3 = مؤكد)"
     )
 
 async def cmd_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
